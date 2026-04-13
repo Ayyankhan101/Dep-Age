@@ -22,8 +22,6 @@ function getAssetName() {
     return `dep-age-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz`;
   if (platform === "linux" && arch === "arm64")
     return `dep-age-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz`;
-  if (platform === "darwin" && arch === "x64")
-    return `dep-age-v${VERSION}-x86_64-apple-darwin.tar.gz`;
   if (platform === "darwin" && arch === "arm64")
     return `dep-age-v${VERSION}-aarch64-apple-darwin.tar.gz`;
   if (platform === "win32" && arch === "x64")
