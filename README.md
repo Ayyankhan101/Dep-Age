@@ -1,6 +1,12 @@
 # dep-age
 
-> Check how old your dependencies are — for both **Cargo.toml** and **package.json**.
+[![Crates.io](https://img.shields.io/crates/v/dep-age.svg)](https://crates.io/crates/dep-age)
+[![Crates.io Downloads](https://img.shields.io/crates/d/dep-age.svg)](https://crates.io/crates/dep-age)
+[![npm](https://img.shields.io/npm/v/dep-age.svg)](https://www.npmjs.com/package/dep-age)
+[![CI](https://github.com/Ayyankhan101/Dep-Age/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayyankhan101/Dep-Age/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> Check how old your dependencies are — for **Cargo.toml**, **package.json**, **pyproject.toml**, and **requirements.txt**.
 
 See at a glance which packages haven't been updated in months or years. Spot stale and abandoned dependencies before they become a security or compatibility problem.
 
@@ -30,19 +36,34 @@ dep-age
 # Check a specific file
 dep-age Cargo.toml
 dep-age path/to/package.json
+dep-age path/to/pyproject.toml
+dep-age path/to/requirements.txt
 
 # Skip dev-dependencies
 dep-age --no-dev
 
-# Only show stale and ancient packages
+# Only show specific statuses
 dep-age --filter ancient
 dep-age --filter stale
+dep-age --filter aging
 
 # Output raw JSON (great for CI)
 dep-age --json
 
+# Fail only on stale+ancient (default: ancient)
+dep-age --fail-on stale
+
+# Use cached registry responses (1h TTL)
+dep-age --cache
+
 # Custom age thresholds (days)
 dep-age --fresh 60 --aging 180 --stale 540
+
+# Ignore specific packages
+dep-age --ignore time --ignore old-crate
+
+# Control parallelism (default: 10)
+dep-age --concurrency 20
 ```
 
 ### Status thresholds
@@ -115,7 +136,7 @@ async fn main() {
 ### Check a single package
 
 ```rust
-use dep_age::{check_crate, check_npm_package, CheckOptions};
+use dep_age::{check_crate, check_npm_package, check_pypi_package, CheckOptions};
 
 #[tokio::main]
 async fn main() {
@@ -126,18 +147,44 @@ async fn main() {
 
     let result = check_npm_package("lodash", "^4.17.21", &opts).await;
     println!("{}: {}", result.name, result.status.as_str());
+
+    let result = check_pypi_package("requests", ">=2.28", &opts).await;
+    println!("{}: {}", result.name, result.status.as_str());
+}
+```
+
+### Check a `pyproject.toml` or `requirements.txt`
+
+```rust
+use dep_age::{check_pyproject_toml, check_requirements_txt, CheckOptions};
+
+#[tokio::main]
+async fn main() {
+    let opts = CheckOptions::default();
+
+    let summary = check_pyproject_toml("pyproject.toml", &opts).await.unwrap();
+    println!("Total Python deps: {}", summary.total);
+
+    let summary = check_requirements_txt("requirements.txt", &opts).await.unwrap();
+    println!("Ancient Python packages: {}", summary.ancient);
 }
 ```
 
 ### `CheckOptions`
 
-| Field              | Type    | Default | Description                            |
-|--------------------|---------|---------|----------------------------------------|
-| `include_dev`      | `bool`  | `true`  | Include dev-dependencies               |
-| `concurrency`      | `usize` | `10`    | Parallel registry requests             |
-| `threshold_fresh`  | `i64`   | `90`    | Days below which = fresh               |
-| `threshold_aging`  | `i64`   | `365`   | Days below which = aging               |
-| `threshold_stale`  | `i64`   | `730`   | Days below which = stale               |
+| Field              | Type                  | Default | Description                            |
+|--------------------|-----------------------|---------|----------------------------------------|
+| `include_dev`      | `bool`                | `true`  | Include dev-dependencies               |
+| `concurrency`      | `usize`               | `10`    | Parallel registry requests             |
+| `threshold_fresh`  | `i64`                 | `90`    | Days below which = fresh               |
+| `threshold_aging`  | `i64`                 | `365`   | Days below which = aging               |
+| `threshold_stale`  | `i64`                 | `730`   | Days below which = stale               |
+| `ignore_list`      | `Vec<String>`         | `[]`    | Package names to skip                  |
+| `crates_base_url`  | `Option<String>`      | `None`  | Override crates.io API URL             |
+| `npm_base_url`     | `Option<String>`      | `None`  | Override npm registry URL              |
+| `pypi_base_url`    | `Option<String>`      | `None`  | Override PyPI API URL                 |
+| `registry_cache`   | `Option<RegistryCache>` | `None` | Use cached registry responses        |
+| `on_progress`      | `Arc<dyn Fn(DepResult)>` | `None` | Callback per-package results          |
 
 ### `DepResult`
 
@@ -149,7 +196,7 @@ pub struct DepResult {
     pub published_at: Option<DateTime<Utc>>,
     pub days_since_publish: Option<i64>,
     pub status: Status,     // Fresh | Aging | Stale | Ancient | Error(String)
-    pub registry: Registry, // Crates | Npm
+    pub registry: Registry, // Crates | Npm | Pypi
 }
 ```
 
@@ -173,7 +220,14 @@ pub struct DepAgeSummary {
 
 ## CI usage
 
-Use `--json` and pipe to `jq`:
+### GitHub Actions
+
+```yaml
+- name: Check dependency ages
+  run: dep-age --no-dev --fail-on stale
+```
+
+### JSON output + jq
 
 ```bash
 # Fail if any packages are ancient
@@ -181,7 +235,33 @@ dep-age --json | jq 'if .ancient > 0 then error("ancient packages found") else .
 
 # Or just let dep-age exit 1 automatically
 dep-age --no-dev && echo "all good"
+
+# Save a report
+dep-age --json > dep-age-report.json
 ```
+
+### With cache (faster re-runs)
+
+```bash
+# Cache registry responses (1h TTL) for faster re-runs
+dep-age --cache --no-dev
+```
+
+---
+
+## Contributing
+
+1. Fork and clone the repo
+2. Run `cargo fmt && cargo clippy -- -D warnings && cargo test`
+3. Open a PR with a clear description of the change
+
+All PRs require green CI (formatting, clippy, tests) before merge.
+
+---
+
+## Security
+
+To report a security vulnerability, please email the maintainer. Do not open a public issue.
 
 ---
 

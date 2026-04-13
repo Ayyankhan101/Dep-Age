@@ -2,7 +2,8 @@
 //!
 //! Check how old your dependencies are.
 //!
-//! Supports both `Cargo.toml` (crates.io) and `package.json` (npm).
+//! Supports `Cargo.toml` (crates.io), `package.json` (npm),
+//! `pyproject.toml` and `requirements.txt` (PyPI).
 //!
 //! ## Example
 //!
@@ -28,6 +29,13 @@ use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// User-Agent header for all registry requests.
+const USER_AGENT: &str = concat!(
+    "dep-age/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://crates.io/crates/dep-age)"
+);
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -324,6 +332,13 @@ pub struct DepAgeSummary {
     pub checked_at: DateTime<Utc>,
 }
 
+impl DepAgeSummary {
+    /// Returns true if all packages are fresh with no errors.
+    pub fn is_all_fresh(&self) -> bool {
+        self.aging == 0 && self.stale == 0 && self.ancient == 0 && self.errors == 0
+    }
+}
+
 /// Options for customising the check.
 pub struct CheckOptions {
     /// Include dev dependencies (default: true).
@@ -336,6 +351,8 @@ pub struct CheckOptions {
     pub threshold_aging: i64,
     /// Days threshold for "stale" status (default: 730).
     pub threshold_stale: i64,
+    /// Package names to skip from the check.
+    pub ignore_list: Vec<String>,
     /// Optional custom crates.io base URL (for testing).
     pub crates_base_url: Option<String>,
     /// Optional custom npm registry base URL (for testing).
@@ -356,6 +373,7 @@ impl Default for CheckOptions {
             threshold_fresh: 90,
             threshold_aging: 365,
             threshold_stale: 730,
+            ignore_list: vec![],
             crates_base_url: None,
             npm_base_url: None,
             pypi_base_url: None,
@@ -373,6 +391,7 @@ impl Clone for CheckOptions {
             threshold_fresh: self.threshold_fresh,
             threshold_aging: self.threshold_aging,
             threshold_stale: self.threshold_stale,
+            ignore_list: self.ignore_list.clone(),
             crates_base_url: self.crates_base_url.clone(),
             npm_base_url: self.npm_base_url.clone(),
             pypi_base_url: self.pypi_base_url.clone(),
@@ -390,6 +409,7 @@ impl std::fmt::Debug for CheckOptions {
             .field("threshold_fresh", &self.threshold_fresh)
             .field("threshold_aging", &self.threshold_aging)
             .field("threshold_stale", &self.threshold_stale)
+            .field("ignore_list", &self.ignore_list)
             .field("crates_base_url", &self.crates_base_url)
             .field("npm_base_url", &self.npm_base_url)
             .field("pypi_base_url", &self.pypi_base_url)
@@ -887,11 +907,17 @@ pub async fn check_cargo_toml(
         }
     }
 
-    let client = Client::builder()
-        .user_agent("dep-age/0.1.0 (https://crates.io/crates/dep-age)")
-        .build()?;
+    let client = Client::builder().user_agent(USER_AGENT).build()?;
 
-    let entries: Vec<(String, String)> = deps.into_iter().collect();
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
     let on_progress = opts.on_progress.clone();
     let results = stream::iter(entries)
         .enumerate()
@@ -951,11 +977,17 @@ pub async fn check_package_json(
         }
     }
 
-    let client = Client::builder()
-        .user_agent("dep-age/0.1.0 (https://crates.io/crates/dep-age)")
-        .build()?;
+    let client = Client::builder().user_agent(USER_AGENT).build()?;
 
-    let entries: Vec<(String, String)> = deps.into_iter().collect();
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
     let on_progress = opts.on_progress.clone();
     let results = stream::iter(entries)
         .enumerate()
@@ -981,7 +1013,7 @@ pub async fn check_package_json(
 /// Check a single crate by name.
 pub async fn check_crate(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
     let client = Client::builder()
-        .user_agent("dep-age/0.1.0 (https://crates.io/crates/dep-age)")
+        .user_agent(USER_AGENT)
         .build()
         .expect("failed to build HTTP client");
     fetch_crate(&client, name, version, opts).await
@@ -990,7 +1022,7 @@ pub async fn check_crate(name: &str, version: &str, opts: &CheckOptions) -> DepR
 /// Check a single npm package by name.
 pub async fn check_npm_package(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
     let client = Client::builder()
-        .user_agent("dep-age/0.1.0 (https://crates.io/crates/dep-age)")
+        .user_agent(USER_AGENT)
         .build()
         .expect("failed to build HTTP client");
     fetch_npm(&client, name, version, opts).await
@@ -1096,11 +1128,17 @@ pub async fn check_pyproject_toml(
         return Ok(build_summary(vec![]));
     }
 
-    let client = Client::builder()
-        .user_agent("dep-age/0.1.0 (https://crates.io/crates/dep-age)")
-        .build()?;
+    let client = Client::builder().user_agent(USER_AGENT).build()?;
 
-    let entries: Vec<(String, String)> = deps.into_iter().collect();
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
     let on_progress = opts.on_progress.clone();
     let results = stream::iter(entries)
         .enumerate()
@@ -1172,11 +1210,17 @@ pub async fn check_requirements_txt(
         return Ok(build_summary(vec![]));
     }
 
-    let client = Client::builder()
-        .user_agent("dep-age/0.1.0 (https://crates.io/crates/dep-age)")
-        .build()?;
+    let client = Client::builder().user_agent(USER_AGENT).build()?;
 
-    let entries: Vec<(String, String)> = deps.into_iter().collect();
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
     let on_progress = opts.on_progress.clone();
     let results = stream::iter(entries)
         .enumerate()
@@ -1316,11 +1360,17 @@ pub async fn check_cargo_workspace(
             }
 
             // Fetch all dependencies from registry
-            let client = Client::builder()
-                .user_agent("dep-age/0.1.0 (https://crates.io/crates/dep-age)")
-                .build()?;
+            let client = Client::builder().user_agent(USER_AGENT).build()?;
 
-            let entries: Vec<(String, String)> = all_deps.into_iter().collect();
+            let entries: Vec<(String, String)> = all_deps
+                .into_iter()
+                .filter(|(name, _)| {
+                    !opts
+                        .ignore_list
+                        .iter()
+                        .any(|i| i.eq_ignore_ascii_case(name))
+                })
+                .collect();
             let on_progress = opts.on_progress.clone();
             let results = stream::iter(entries)
                 .enumerate()

@@ -55,6 +55,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     cache: bool,
 
+    /// Ignore packages by name (repeatable)
+    #[arg(long)]
+    ignore: Vec<String>,
+
+    /// Sort results by: age (default), name, status
+    #[arg(long, default_value = "age")]
+    sort: SortArg,
+
     /// Exit code 1 when packages match this status or worse
     #[arg(long, value_enum, default_value = "ancient")]
     fail_on: FailOnArg,
@@ -100,6 +108,16 @@ enum FailOnArg {
     Never,
 }
 
+#[derive(Clone, PartialEq, ValueEnum)]
+enum SortArg {
+    /// Sort by age (oldest first, default)
+    Age,
+    /// Sort alphabetically by package name
+    Name,
+    /// Sort by status (ancient first, then stale, aging, fresh)
+    Status,
+}
+
 // ── Display helpers ─────────────────────────────────────────────────────────
 
 fn status_color(r: &DepResult) -> ColoredString {
@@ -143,8 +161,9 @@ fn format_bytes(bytes: u64) -> String {
 
 fn print_row(r: &DepResult) {
     let icon = status_icon(r);
-    let name = format!("{:<34}", r.name);
-    let ver = format!("{:<14}", r.version_spec);
+    let name = format!("{:<30}", r.name);
+    let ver = format!("{:<12}", r.version_spec);
+    let latest = format!("{:<10}", r.latest_version);
     let age = format_age(r.days_since_publish);
     let age_col = match &r.status {
         Status::Fresh => format!("{:<10}", age).green(),
@@ -160,10 +179,11 @@ fn print_row(r: &DepResult) {
     };
 
     println!(
-        "  {}  {} {} {}  {}  {}",
+        "  {}  {} {} {} {}  {}  {}",
         icon,
         name.bold(),
         ver.dimmed(),
+        latest.dimmed(),
         age_col,
         status_color(r),
         reg
@@ -533,6 +553,7 @@ async fn main() {
         threshold_fresh: cli.fresh,
         threshold_aging: cli.aging,
         threshold_stale: cli.stale,
+        ignore_list: cli.ignore,
         registry_cache: if cli.cache {
             RegistryCache::new().ok()
         } else {
@@ -599,16 +620,29 @@ async fn main() {
     println!(
         "  {}",
         format!(
-            "  {:<34} {:<14} {:<10}  {}",
-            "package", "version", "age", "status"
+            "  {:<30} {:<12} {:<10} {:<10}  {}",
+            "package", "version", "latest", "age", "status"
         )
         .dimmed()
     );
-    println!("  {}", "─".repeat(72).dimmed());
+    println!("  {}", "─".repeat(80).dimmed());
 
     // Sort and filter results
     let mut results = summary.results.clone();
-    results.sort_by_key(|r| sort_key(&r.status));
+    results.sort_by(|a, b| {
+        let key = |r: &DepResult| match cli.sort {
+            SortArg::Age => (sort_key(&r.status), r.days_since_publish.unwrap_or(0)),
+            SortArg::Status => (sort_key(&r.status), 0),
+            SortArg::Name => (4, 0), // fallback
+        };
+        let ak = key(a);
+        let bk = key(b);
+        if cli.sort == SortArg::Name {
+            a.name.cmp(&b.name)
+        } else {
+            ak.cmp(&bk)
+        }
+    });
 
     for r in results.iter().filter(|r| should_show(r, &cli.filter)) {
         print_row(r);
