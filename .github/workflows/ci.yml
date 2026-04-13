@@ -88,14 +88,20 @@ jobs:
 
   # ── Test matrix: debug + release ────────────────────────────────────────
   test:
-    name: Test (${{ matrix.profile }})
+    name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
-        profile: [debug, release]
+        include:
+          - name: dev
+            test-flag: ""
+            build-flag: ""
+          - name: release
+            test-flag: --release
+            build-flag: --release
 
     steps:
       - uses: actions/checkout@v4
@@ -106,32 +112,36 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: ci-test-${{ matrix.profile }}
+          key: ci-test-${{ matrix.name }}
 
-      - name: Run tests (${{ matrix.profile }})
-        run: cargo test --profile ${{ matrix.profile }} --verbose
+      - name: Build binary (release tests need the binary)
+        if: matrix.name == 'release'
+        run: cargo build --release --verbose
+
+      - name: Run tests
+        run: cargo test ${{ matrix.test-flag }} --verbose
 
       - name: Run doc-tests
-        run: cargo test --profile ${{ matrix.profile }} --doc
+        run: cargo test ${{ matrix.test-flag }} --doc
 
       # Verify the binary actually runs
       - name: Smoke test binary
+        if: matrix.name == 'release'
         run: |
-          cargo build --profile ${{ matrix.profile }}
-          ./target/${{ matrix.profile == 'release' && 'release' || 'debug' }}/dep-age --version
-          ./target/${{ matrix.profile == 'release' && 'release' || 'debug' }}/dep-age --help > /dev/null
+          target/release/dep-age --version
+          target/release/dep-age --help > /dev/null
 
-      # Coverage (debug only to save time)
+      # Coverage (dev only to save time)
       - name: Install cargo-llvm-cov
-        if: matrix.profile == 'debug'
+        if: matrix.name == 'dev'
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage
-        if: matrix.profile == 'debug'
+        if: matrix.name == 'dev'
         run: cargo llvm-cov --lcov --output-path lcov.info
 
       - name: Upload coverage
-        if: matrix.profile == 'debug'
+        if: matrix.name == 'dev'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov

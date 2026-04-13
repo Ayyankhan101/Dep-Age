@@ -7,7 +7,12 @@ use std::process::Command;
 fn bin_path() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("target");
-    path.push("debug");
+    // Pick the right binary for the test profile
+    if cfg!(debug_assertions) {
+        path.push("debug");
+    } else {
+        path.push("release");
+    }
     path.push("dep-age");
     path
 }
