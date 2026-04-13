@@ -3,31 +3,220 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - LICENSE
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - LICENSE
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
 jobs:
-  test:
-    name: Test & Clippy
+  # ── Shared: determine changed files ─────────────────────────────────────
+  changes:
+    name: Detect changes
     runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      npm: ${{ steps.filter.outputs.npm }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            npm:
+              - 'npm/**'
+
+  # ── Lint: formatting + clippy + lint ────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-lint
+
+      # Rustfmt — must be clean
+      - name: Check formatting
+        run: cargo fmt --check
+
+      # Clippy — zero warnings, deny all lints
+      - name: Clippy (workspace)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # Verify no TODO/FIXME markers are silently left
+      - name: Check for unresolved markers
+        run: |
+          set +e
+          markers=$(grep -rn 'TODO\|FIXME\|HACK\|XXX' src/ --include='*.rs' || true)
+          if [ -n "$markers" ]; then
+            echo "::warning::Found unresolved markers in source:"
+            echo "$markers" | while read -r line; do
+              echo "::warning::$line"
+            done
+          fi
+
+  # ── Test matrix: debug + release ────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-test-${{ matrix.profile }}
 
-      - name: Clippy (zero warnings)
-        run: cargo clippy -- -D warnings
+      - name: Run tests (${{ matrix.profile }})
+        run: cargo test --profile ${{ matrix.profile }} --verbose
 
-      - name: Run tests
-        run: cargo test
+      - name: Run doc-tests
+        run: cargo test --profile ${{ matrix.profile }} --doc
 
-      - name: Build release binary
-        run: cargo build --release
+      # Verify the binary actually runs
+      - name: Smoke test binary
+        run: |
+          cargo build --profile ${{ matrix.profile }}
+          ./target/${{ matrix.profile == 'release' && 'release' || 'debug' }}/dep-age --version
+          ./target/${{ matrix.profile == 'release' && 'release' || 'debug' }}/dep-age --help > /dev/null
+
+      # Coverage (debug only to save time)
+      - name: Install cargo-llvm-cov
+        if: matrix.profile == 'debug'
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        if: matrix.profile == 'debug'
+        run: cargo llvm-cov --lcov --output-path lcov.info
+
+      - name: Upload coverage
+        if: matrix.profile == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── Cross-platform build check ──────────────────────────────────────────
+  cross-build:
+    name: Cross-build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-cross-${{ matrix.target }}
+
+      - name: Install cross (Linux ARM64)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Add target
+        if: '!matrix.cross'
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build (native)
+        if: '!matrix.cross'
+        run: cargo build --target ${{ matrix.target }} --verbose
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --target ${{ matrix.target }} --verbose
+
+  # ── npm: validate package.json + install script lint ────────────────────
+  npm-check:
+    name: npm package check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.npm == 'true' || github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate package.json
+        working-directory: ./npm
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            assert(pkg.name, 'missing name');
+            assert(pkg.version, 'missing version');
+            assert(pkg.bin, 'missing bin');
+            assert(pkg.scripts.postinstall, 'missing postinstall script');
+            console.log('✓ package.json valid');
+          "
+
+      - name: Verify install.js syntax
+        working-directory: ./npm
+        run: node --check install.js
+
+      - name: Verify run.js syntax
+        working-directory: ./npm
+        run: node --check run.js

@@ -15,3 +15,6 @@ Thumbs.db
 
 # Cache (in case someone runs with local cache dir)
 /.dep-age-cache
+
+# npm: downloaded binaries
+/npm/bin

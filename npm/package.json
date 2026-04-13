@@ -1,0 +1,32 @@
+{
+  "name": "dep-age",
+  "version": "0.1.0",
+  "description": "Check how old your dependencies are — for Cargo.toml, package.json, pyproject.toml, and requirements.txt",
+  "bin": {
+    "dep-age": "run.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ayyankhan101/Dep-Age.git"
+  },
+  "keywords": [
+    "dependencies",
+    "audit",
+    "stale",
+    "cargo",
+    "npm",
+    "cli"
+  ],
+  "author": "Ayyan",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Ayyankhan101/Dep-Age/issues"
+  },
+  "homepage": "https://github.com/Ayyankhan101/Dep-Age#readme",
+  "engines": {
+    "node": ">=14"
+  }
+}

@@ -4,61 +4,334 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 jobs:
-  publish-crates-io:
-    name: Publish to crates.io
+  # ── Validate tag ────────────────────────────────────────────────────────
+  validate:
+    name: Validate
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: extract
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Verify tag matches semver
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Tag $TAG is not valid semver (expected vX.Y.Z)"
+            exit 1
+          fi
+          echo "✓ Version: $VERSION"
+
+      # Verify Cargo.toml version matches tag
+      - name: Verify version matches Cargo.toml
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "//;s/"//')
+          if [ "$CARGO_VERSION" != "${{ steps.extract.outputs.version }}" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VERSION) != tag version (${{ steps.extract.outputs.version }})"
+            exit 1
+          fi
+          echo "✓ Cargo.toml version matches tag"
+
+      # Verify CHANGELOG entry exists
+      - name: Verify CHANGELOG entry
+        run: |
+          VERSION="${{ steps.extract.outputs.version }}"
+          if ! grep -q "## \[$VERSION\]" CHANGELOG.md 2>/dev/null; then
+            echo "::warning::No CHANGELOG entry found for v$VERSION"
+          else
+            echo "✓ CHANGELOG entry exists"
+          fi
+
+  # ── Gate: run full test suite + clippy ──────────────────────────────────
+  verify:
+    name: Verify (tests + clippy)
+    runs-on: ubuntu-latest
+    needs: validate
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-verify
+
+      - name: Clippy (zero warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Run doc-tests
+        run: cargo test --doc
+
+  # ── Publish to crates.io ────────────────────────────────────────────────
+  publish-crates-io:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: [validate, verify]
+    if: secrets.CARGO_TOKEN != ''
+    timeout-minutes: 10
+    # Only allow one publish job at a time across all runs
+    concurrency:
+      group: crates-io-publish
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: release-crates-io
 
-      - name: Verify tests pass
-        run: cargo test
+      - name: Dry-run publish
+        run: cargo publish --dry-run --verbose
+        env:
+          RUST_LOG: info
 
-      - name: Verify clippy is clean
-        run: cargo clippy -- -D warnings
+      - name: Publish
+        run: cargo publish --token ${{ secrets.CARGO_TOKEN }} --verbose
 
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Wait for crates.io index update
+        run: |
+          echo "Waiting 10s for crates.io to register the publish..."
+          sleep 10
+          echo "✓ crates.io publish complete"
 
-  create-github-release:
-    name: GitHub Release
-    runs-on: ubuntu-latest
-    needs: publish-crates-io
+  # ── Build release binaries (5 targets) ──────────────────────────────────
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: [validate, verify]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build release binary
-        run: cargo build --release
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
 
-      - name: Archive binary
+      - name: Install cross (Linux ARM64)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Add target
+        if: '!matrix.cross'
+        run: rustup target add ${{ matrix.target }}
+
+      # Build
+      - name: Build release binary (native)
+        if: '!matrix.cross'
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+
+      - name: Build release binary (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} --verbose
+
+      # Verify binary size is reasonable
+      - name: Check binary size
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
-          tar czf dep-age-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz -C target/release dep-age
-          sha256sum dep-age-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz > dep-age-${{ github.ref_name }}-sha256sums.txt
+          BIN="target/${{ matrix.target }}/release/dep-age"
+          SIZE=$(stat -f%z "$BIN" 2>/dev/null || stat -c%s "$BIN" 2>/dev/null || echo 0)
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "Binary size: ${SIZE_MB}MB"
+          if [ "$SIZE_MB" -gt 50 ]; then
+            echo "::warning::Binary size exceeds 50MB ($SIZE_MB MB)"
+          fi
+
+      # Archive
+      - name: Archive (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          ARCHIVE_NAME="dep-age-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz"
+          tar czf "$ARCHIVE_NAME" -C "target/${{ matrix.target }}/release" dep-age
+          echo "ARCHIVE=$ARCHIVE_NAME" >> "$GITHUB_ENV"
+
+      - name: Archive (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $archiveName = "dep-age-${{ needs.validate.outputs.version }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/dep-age.exe" -DestinationPath $archiveName
+          echo "ARCHIVE=$archiveName" >> $env:GITHUB_ENV
+
+      # Upload for release job
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 1
+          if-no-files-found: error
+
+  # ── Create GitHub Release ───────────────────────────────────────────────
+  create-github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, build-binaries]
+    timeout-minutes: 15
+    concurrency:
+      group: github-release
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Verify downloaded artifacts
+        run: |
+          count=$(find artifacts -type f | wc -l)
+          echo "Found $count release artifact(s)"
+          ls -lh artifacts/
+
+      # Generate sha256sums
+      - name: Generate sha256sums
+        run: |
+          cd artifacts
+          sha256sum * > sha256sums.txt
+          echo "--- SHA256SUMS ---"
+          cat sha256sums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dep-age-*.tar.gz
-            dep-age-*sha256sums.txt
+          files: artifacts/*
           generate_release_notes: true
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Announce release URL
+        if: success()
+        run: |
+          echo "🎉 Release available at:"
+          echo "  https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+
+  # ── Publish to npm ──────────────────────────────────────────────────────
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: [validate, create-github-release]
+    if: secrets.NPM_TOKEN != ''
+    timeout-minutes: 10
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+          cache: ''
+
+      - name: Verify npm package structure
+        working-directory: ./npm
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            const checks = ['name', 'version', 'bin', 'scripts.postinstall'];
+            for (const key of checks) {
+              const keys = key.split('.');
+              let obj = pkg;
+              for (const k of keys) obj = obj[k];
+              if (!obj) { throw new Error('Missing: ' + key); }
+            }
+            console.log('✓ npm package structure valid');
+          "
+
+      - name: Verify install.js syntax
+        working-directory: ./npm
+        run: node --check install.js
+
+      - name: Verify run.js syntax
+        working-directory: ./npm
+        run: node --check run.js
+
+      # Dry-run first to catch issues early
+      - name: Dry-run publish
+        working-directory: ./npm
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        working-directory: ./npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Announce npm release
+        if: success()
+        run: |
+          echo "📦 Published to npm: dep-age@${{ needs.validate.outputs.version }}"
+          echo "  https://www.npmjs.com/package/dep-age/v/${{ needs.validate.outputs.version }}"
