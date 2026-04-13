@@ -57,7 +57,10 @@ serde = "1"
     assert_eq!(dep.latest_version, "1.0.197");
     assert!(dep.published_at.is_some());
     assert!(dep.days_since_publish.is_some());
-    assert!(matches!(dep.status, Status::Fresh | Status::Aging | Status::Stale | Status::Ancient));
+    assert!(matches!(
+        dep.status,
+        Status::Fresh | Status::Aging | Status::Stale | Status::Ancient
+    ));
 }
 
 #[tokio::test]
@@ -387,10 +390,7 @@ async fn test_crates_io_invalid_json_response() {
 
     Mock::given(method("GET"))
         .and(path("/api/v1/crates/broken-response"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("this is not valid json {{{"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("this is not valid json {{{"))
         .mount(&mock_server)
         .await;
 
@@ -460,5 +460,8 @@ async fn test_npm_missing_dist_tags() {
     let summary = result.unwrap();
     assert_eq!(summary.total, 1);
     // Should still work by falling back to time map
-    assert!(summary.results[0].latest_version == "unknown" || summary.results[0].days_since_publish.is_some());
+    assert!(
+        summary.results[0].latest_version == "unknown"
+            || summary.results[0].days_since_publish.is_some()
+    );
 }

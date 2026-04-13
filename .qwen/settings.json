@@ -9,7 +9,13 @@
       "Bash(ls *)",
       "Bash(./target/debug/dep-age *)",
       "WebFetch(pypi.org)",
-      "Bash(mkdir *)"
+      "Bash(mkdir *)",
+      "Bash(node *)",
+      "Bash(git diff *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git tag *)"
     ]
   },
   "$version": 3

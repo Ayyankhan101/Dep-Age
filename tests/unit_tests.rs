@@ -203,8 +203,7 @@ tokio = { version = "1", features = ["macros"] }
             include_dev: true,
             ..CheckOptions::default()
         };
-        let result =
-            check_cargo_toml(temp_dir.path().join("Cargo.toml"), &opts).await;
+        let result = check_cargo_toml(temp_dir.path().join("Cargo.toml"), &opts).await;
         assert!(result.is_ok());
         let summary = result.unwrap();
         assert_eq!(summary.total, 2);
@@ -232,8 +231,7 @@ tokio = "1"
             include_dev: false,
             ..CheckOptions::default()
         };
-        let result =
-            check_cargo_toml(temp_dir.path().join("Cargo.toml"), &opts).await;
+        let result = check_cargo_toml(temp_dir.path().join("Cargo.toml"), &opts).await;
         assert!(result.is_ok());
         let summary = result.unwrap();
         assert_eq!(summary.total, 1);
@@ -450,11 +448,7 @@ mod json_parsing {
             include_dev: true,
             ..CheckOptions::default()
         };
-        let result = check_package_json(
-            temp_dir.path().join("package.json"),
-            &opts,
-        )
-        .await;
+        let result = check_package_json(temp_dir.path().join("package.json"), &opts).await;
         assert!(result.is_ok());
         let summary = result.unwrap();
         assert_eq!(summary.total, 3);
@@ -483,11 +477,7 @@ mod json_parsing {
             include_dev: false,
             ..CheckOptions::default()
         };
-        let result = check_package_json(
-            temp_dir.path().join("package.json"),
-            &opts,
-        )
-        .await;
+        let result = check_package_json(temp_dir.path().join("package.json"), &opts).await;
         assert!(result.is_ok());
         let summary = result.unwrap();
         assert_eq!(summary.total, 1);
@@ -498,11 +488,8 @@ mod json_parsing {
 
     #[tokio::test]
     async fn test_file_not_found_error() {
-        let result = check_package_json(
-            "/nonexistent/path/package.json",
-            &CheckOptions::default(),
-        )
-        .await;
+        let result =
+            check_package_json("/nonexistent/path/package.json", &CheckOptions::default()).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("File not found"));
@@ -553,7 +540,11 @@ mod json_parsing {
 
         let react_result = summary.results.iter().find(|r| r.name == "react").unwrap();
         let vue_result = summary.results.iter().find(|r| r.name == "vue").unwrap();
-        let angular_result = summary.results.iter().find(|r| r.name == "angular").unwrap();
+        let angular_result = summary
+            .results
+            .iter()
+            .find(|r| r.name == "angular")
+            .unwrap();
 
         assert_eq!(react_result.version_spec, "^18.2.0");
         assert_eq!(vue_result.version_spec, "~3.3.0");
@@ -795,8 +786,7 @@ tokio = "1"
             include_dev: true,
             ..CheckOptions::default()
         };
-        let result =
-            check_cargo_workspace(temp_dir.path().join("Cargo.toml"), &opts).await;
+        let result = check_cargo_workspace(temp_dir.path().join("Cargo.toml"), &opts).await;
         assert!(result.is_ok());
         let summary = result.unwrap();
         assert_eq!(summary.total, 2);
@@ -806,8 +796,7 @@ tokio = "1"
             include_dev: false,
             ..CheckOptions::default()
         };
-        let result =
-            check_cargo_workspace(temp_dir.path().join("Cargo.toml"), &opts).await;
+        let result = check_cargo_workspace(temp_dir.path().join("Cargo.toml"), &opts).await;
         assert!(result.is_ok());
         let summary = result.unwrap();
         assert_eq!(summary.total, 1);

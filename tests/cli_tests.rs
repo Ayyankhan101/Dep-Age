@@ -29,7 +29,9 @@ fn test_cli_no_manifest_found() {
         .expect("Failed to execute command");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("No Cargo.toml, package.json, pyproject.toml, or requirements.txt found"));
+    assert!(
+        stderr.contains("No Cargo.toml, package.json, pyproject.toml, or requirements.txt found")
+    );
     assert!(!output.status.success());
 }
 

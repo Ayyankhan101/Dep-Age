@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::*;
-use dep_age::{check_cargo_toml, check_package_json, CheckOptions, DepResult, Registry, RegistryCache, Status};
+use dep_age::{
+    check_cargo_toml, check_package_json, CheckOptions, DepResult, Registry, RegistryCache, Status,
+};
 use indicatif::ProgressBar;
 use std::path::PathBuf;
 
@@ -195,9 +197,7 @@ fn should_fail(summary: &dep_age::DepAgeSummary, fail_on: &FailOnArg) -> bool {
         FailOnArg::Ancient => summary.ancient > 0,
         FailOnArg::Stale => summary.stale > 0 || summary.ancient > 0,
         FailOnArg::Aging => summary.aging > 0 || summary.stale > 0 || summary.ancient > 0,
-        FailOnArg::Any => {
-            summary.aging > 0 || summary.stale > 0 || summary.ancient > 0
-        }
+        FailOnArg::Any => summary.aging > 0 || summary.stale > 0 || summary.ancient > 0,
         FailOnArg::Never => false,
     }
 }
@@ -265,10 +265,7 @@ fn get_cargo_dep_count(path: &PathBuf) -> usize {
     if let Some(deps) = manifest.get("dependencies").and_then(|v| v.as_table()) {
         count += deps.len();
     }
-    if let Some(deps) = manifest
-        .get("dev-dependencies")
-        .and_then(|v| v.as_table())
-    {
+    if let Some(deps) = manifest.get("dev-dependencies").and_then(|v| v.as_table()) {
         count += deps.len();
     }
     if let Some(deps) = manifest
@@ -295,10 +292,7 @@ fn get_package_json_dep_count(path: &PathBuf) -> usize {
     if let Some(deps) = pkg.get("dependencies").and_then(|v| v.as_object()) {
         count += deps.len();
     }
-    if let Some(deps) = pkg
-        .get("devDependencies")
-        .and_then(|v| v.as_object())
-    {
+    if let Some(deps) = pkg.get("devDependencies").and_then(|v| v.as_object()) {
         count += deps.len();
     }
     count
@@ -446,7 +440,10 @@ async fn main() {
                     }
                 };
                 let stats_before = cache.stats().unwrap_or(dep_age::CacheStats {
-                    total_entries: 0, expired_entries: 0, valid_entries: 0, total_size_bytes: 0,
+                    total_entries: 0,
+                    expired_entries: 0,
+                    valid_entries: 0,
+                    total_size_bytes: 0,
                 });
                 cache.clear().unwrap_or_else(|e| {
                     eprintln!("{} {}", "error:".red().bold(), e);
@@ -475,9 +472,21 @@ async fn main() {
                 println!();
                 println!("  {}", "Cache Statistics".bold());
                 println!("  {}", "─────────────────────────────".dimmed());
-                println!("  {:<20} {}", "Total entries:".dimmed(), stats.total_entries);
-                println!("  {:<20} {}", "Valid entries:".dimmed(), stats.valid_entries);
-                println!("  {:<20} {}", "Expired entries:".dimmed(), stats.expired_entries);
+                println!(
+                    "  {:<20} {}",
+                    "Total entries:".dimmed(),
+                    stats.total_entries
+                );
+                println!(
+                    "  {:<20} {}",
+                    "Valid entries:".dimmed(),
+                    stats.valid_entries
+                );
+                println!(
+                    "  {:<20} {}",
+                    "Expired entries:".dimmed(),
+                    stats.expired_entries
+                );
                 println!(
                     "  {:<20} {}",
                     "Total size:".dimmed(),
@@ -561,12 +570,8 @@ async fn main() {
     let summary = match manifest {
         ManifestKind::Cargo(p) => check_cargo_toml(p, &opts).await,
         ManifestKind::PackageJson(p) => check_package_json(p, &opts).await,
-        ManifestKind::Pyproject(p) => {
-            dep_age::check_pyproject_toml(p, &opts).await
-        }
-        ManifestKind::RequirementsTxt(p) => {
-            dep_age::check_requirements_txt(p, &opts).await
-        }
+        ManifestKind::Pyproject(p) => dep_age::check_pyproject_toml(p, &opts).await,
+        ManifestKind::RequirementsTxt(p) => dep_age::check_requirements_txt(p, &opts).await,
     };
 
     let summary = match summary {
@@ -640,11 +645,7 @@ async fn main() {
     print_line("errors", summary.errors, "dim");
 
     println!("  {}", "─────────────────────────────".dimmed());
-    println!(
-        "  {}  {} packages checked",
-        "total".dimmed(),
-        summary.total
-    );
+    println!("  {}  {} packages checked", "total".dimmed(), summary.total);
 
     if let Some(oldest) = &summary.oldest {
         println!();

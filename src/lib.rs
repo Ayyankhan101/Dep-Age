@@ -394,7 +394,10 @@ impl std::fmt::Debug for CheckOptions {
             .field("npm_base_url", &self.npm_base_url)
             .field("pypi_base_url", &self.pypi_base_url)
             .field("registry_cache", &self.registry_cache)
-            .field("on_progress", &self.on_progress.as_ref().map(|_| "Some(callback)"))
+            .field(
+                "on_progress",
+                &self.on_progress.as_ref().map(|_| "Some(callback)"),
+            )
             .finish()
     }
 }
@@ -402,7 +405,10 @@ impl std::fmt::Debug for CheckOptions {
 impl CheckOptions {
     /// Create new options with modified concurrency
     pub fn with_concurrency(self, concurrency: usize) -> Self {
-        Self { concurrency, ..self }
+        Self {
+            concurrency,
+            ..self
+        }
     }
 }
 
@@ -823,7 +829,10 @@ fn build_summary(results: Vec<DepResult>) -> DepAgeSummary {
         fresh: results.iter().filter(|r| r.status == Status::Fresh).count(),
         aging: results.iter().filter(|r| r.status == Status::Aging).count(),
         stale: results.iter().filter(|r| r.status == Status::Stale).count(),
-        ancient: results.iter().filter(|r| r.status == Status::Ancient).count(),
+        ancient: results
+            .iter()
+            .filter(|r| r.status == Status::Ancient)
+            .count(),
         errors: results
             .iter()
             .filter(|r| matches!(r.status, Status::Error(_)))
@@ -1275,10 +1284,8 @@ pub async fn check_cargo_workspace(
                 // Handle glob patterns like "crates/*"
                 if member_pattern.contains('*') {
                     // Get the parent directory of the glob pattern
-                    let glob_parent = workspace_root.join(
-                        member_pattern.trim_end_matches("/*")
-                    );
-                    
+                    let glob_parent = workspace_root.join(member_pattern.trim_end_matches("/*"));
+
                     if let Ok(entries) = std::fs::read_dir(&glob_parent) {
                         for entry in entries.filter_map(|e| e.ok()) {
                             let entry_path = entry.path();

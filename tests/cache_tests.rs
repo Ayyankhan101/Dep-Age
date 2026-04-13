@@ -26,8 +26,7 @@ async fn test_cache_stores_and_retrieves_response() {
         .mount(&mock_server)
         .await;
 
-    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf())
-        .with_ttl(3600);
+    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf()).with_ttl(3600);
 
     let temp_dir = TempDir::new().unwrap();
     fs::write(
@@ -117,8 +116,7 @@ tokio = "1"
 #[tokio::test]
 async fn test_cache_clear() {
     let cache_dir = TempDir::new().unwrap();
-    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf())
-        .with_ttl(3600);
+    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf()).with_ttl(3600);
 
     // Add some data to cache
     cache.set("http://example.com/test", b"test data".to_vec());
@@ -139,8 +137,7 @@ async fn test_cache_clear() {
 #[tokio::test]
 async fn test_cache_stats() {
     let cache_dir = TempDir::new().unwrap();
-    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf())
-        .with_ttl(3600);
+    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf()).with_ttl(3600);
 
     // Add some entries
     cache.set("http://example.com/1", vec![1; 100]);
@@ -157,10 +154,9 @@ async fn test_cache_stats() {
 #[tokio::test]
 async fn test_cache_ttl_expiration() {
     let cache_dir = TempDir::new().unwrap();
-    
+
     // Create cache with very short TTL (1 second)
-    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf())
-        .with_ttl(1);
+    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf()).with_ttl(1);
 
     cache.set("http://example.com/expiring", b"test".to_vec());
 
@@ -193,8 +189,7 @@ async fn test_npm_caching() {
         .mount(&mock_server)
         .await;
 
-    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf())
-        .with_ttl(3600);
+    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf()).with_ttl(3600);
 
     let temp_dir = TempDir::new().unwrap();
     fs::write(
@@ -263,8 +258,7 @@ async fn test_multiple_packages_caching() {
         .mount(&mock_server)
         .await;
 
-    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf())
-        .with_ttl(3600);
+    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf()).with_ttl(3600);
 
     let temp_dir = TempDir::new().unwrap();
     fs::write(
@@ -316,8 +310,7 @@ async fn test_cache_error_responses_not_cached() {
         .mount(&mock_server)
         .await;
 
-    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf())
-        .with_ttl(3600);
+    let cache = RegistryCache::with_cache_dir(cache_dir.path().to_path_buf()).with_ttl(3600);
 
     let temp_dir = TempDir::new().unwrap();
     fs::write(

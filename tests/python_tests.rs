@@ -207,7 +207,11 @@ async fn test_requirements_txt_basic() {
 #[tokio::test]
 async fn test_requirements_txt_empty() {
     let temp_dir = TempDir::new().unwrap();
-    fs::write(temp_dir.path().join("requirements.txt"), "# just a comment\n\n").unwrap();
+    fs::write(
+        temp_dir.path().join("requirements.txt"),
+        "# just a comment\n\n",
+    )
+    .unwrap();
 
     let opts = CheckOptions::default();
     let summary = check_requirements_txt(temp_dir.path().join("requirements.txt"), &opts)
