@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check)",
+      "Bash(cargo test)",
+      "Bash(cargo *)",
+      "Bash(mv *)",
+      "Bash(rmdir *)",
+      "Bash(ls *)",
+      "Bash(./target/debug/dep-age *)",
+      "WebFetch(pypi.org)",
+      "Bash(mkdir *)"
+    ]
+  },
+  "$version": 3
+}

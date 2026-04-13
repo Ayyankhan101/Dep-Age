@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish-crates-io:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tests pass
+        run: cargo test
+
+      - name: Verify clippy is clean
+        run: cargo clippy -- -D warnings
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  create-github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish-crates-io
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Archive binary
+        run: |
+          tar czf dep-age-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz -C target/release dep-age
+          sha256sum dep-age-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz > dep-age-${{ github.ref_name }}-sha256sums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dep-age-*.tar.gz
+            dep-age-*sha256sums.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
