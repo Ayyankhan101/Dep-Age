@@ -108,27 +108,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check if already published
+        id: check
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          echo "Checking if dep-age@$VERSION exists on crates.io..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/dep-age/$VERSION")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::dep-age@$VERSION already published on crates.io — skipping"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "✓ dep-age@$VERSION not found on crates.io — will publish"
+          fi
+
       - name: Install Rust (stable)
+        if: steps.check.outputs.already_published != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache dependencies
+        if: steps.check.outputs.already_published != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           key: release-crates-io
 
       - name: Dry-run publish
+        if: steps.check.outputs.already_published != 'true'
         run: cargo publish --dry-run --verbose
         env:
           RUST_LOG: info
 
       - name: Publish
+        if: steps.check.outputs.already_published != 'true'
         run: cargo publish --token ${{ secrets.CARGO_TOKEN }} --verbose
 
       - name: Wait for crates.io index update
+        if: steps.check.outputs.already_published != 'true'
         run: |
           echo "Waiting 10s for crates.io to register the publish..."
           sleep 10
           echo "✓ crates.io publish complete"
+
+      - name: Skip notice
+        if: steps.check.outputs.already_published == 'true'
+        run: echo "⏭️ Skipped — dep-age@$VERSION already on crates.io"
 
   # ── Build release binaries (5 targets) ──────────────────────────────────
   build-binaries:
@@ -319,19 +342,39 @@ jobs:
         working-directory: ./npm
         run: node --check run.js
 
+      - name: Check if already published
+        id: check
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          echo "Checking if dep-age@$VERSION exists on npm..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/dep-age/$VERSION")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::dep-age@$VERSION already published on npm — skipping"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "✓ dep-age@$VERSION not found on npm — will publish"
+          fi
+
       # Dry-run first to catch issues early
       - name: Dry-run publish
+        if: steps.check.outputs.already_published != 'true'
         working-directory: ./npm
         run: npm pack --dry-run
 
       - name: Publish to npm
+        if: steps.check.outputs.already_published != 'true'
         working-directory: ./npm
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Announce npm release
-        if: success()
+        if: steps.check.outputs.already_published != 'true'
         run: |
           echo "📦 Published to npm: dep-age@${{ needs.validate.outputs.version }}"
           echo "  https://www.npmjs.com/package/dep-age/v/${{ needs.validate.outputs.version }}"
+
+      - name: Skip notice
+        if: steps.check.outputs.already_published == 'true'
+        run: echo "⏭️ Skipped — dep-age@$VERSION already on npm"
