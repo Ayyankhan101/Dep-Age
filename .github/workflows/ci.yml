@@ -180,9 +180,9 @@ jobs:
         with:
           key: ci-cross-${{ matrix.target }}
 
-      - name: Install cross (Linux ARM64)
+      - name: Install cross-rs (Linux ARM64)
         if: matrix.cross
-        run: cargo install cross --locked
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
 
       - name: Add target
         if: '!matrix.cross'
