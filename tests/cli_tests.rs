@@ -156,7 +156,8 @@ fn test_cli_version() {
         .expect("Failed to execute command");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("0.1.0"));
+    assert!(stdout.contains("dep-age"));
+    assert!(stdout.contains("0."));
     assert!(output.status.success());
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "dep-age",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check how old your dependencies are — for Cargo.toml, package.json, pyproject.toml, and requirements.txt",
   "bin": {
     "dep-age": "run.js"

@@ -21,8 +21,23 @@ See at a glance which packages haven't been updated in months or years. Spot sta
 
 ## Install
 
+### Cargo
+
 ```bash
 cargo install dep-age
+```
+
+### Homebrew
+
+```bash
+brew tap Ayyankhan101/dep-age
+brew install dep-age
+```
+
+### npm
+
+```bash
+npm install -g dep-age
 ```
 
 ---
@@ -61,6 +76,18 @@ dep-age --fresh 60 --aging 180 --stale 540
 
 # Ignore specific packages
 dep-age --ignore time --ignore old-crate
+
+# Sort results
+dep-age --sort age        # by age (default)
+dep-age --sort name       # alphabetically
+dep-age --sort status     # grouped by status
+
+# Output formats
+dep-age --format csv      # CSV output (pipeable to spreadsheets)
+dep-age --format json     # JSON output (alternative to --json)
+
+# Ignore file: create a `.dep-age-ignore` in your project root
+# One package name per line, # comments supported
 
 # Control parallelism (default: 10)
 dep-age --concurrency 20
@@ -213,6 +240,15 @@ pub struct DepAgeSummary {
     pub errors: usize,
     pub oldest: Option<DepResult>,
     pub checked_at: DateTime<Utc>,
+}
+```
+
+#### Convenience methods
+
+```rust
+// Check if all packages are fresh (no aging, stale, ancient, or errors)
+if summary.is_all_fresh() {
+    println!("All dependencies are up to date!");
 }
 ```
 

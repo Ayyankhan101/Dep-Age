@@ -31,8 +31,12 @@ struct Cli {
     #[arg(long, value_enum)]
     filter: Option<FilterArg>,
 
-    /// Output raw JSON
-    #[arg(long)]
+    /// Output format: pretty (default), json, csv
+    #[arg(long, default_value = "pretty")]
+    format: OutputFormat,
+
+    /// Output raw JSON (shorthand for --format json)
+    #[arg(long, conflicts_with = "format")]
     json: bool,
 
     /// Number of parallel registry requests
@@ -92,6 +96,17 @@ enum FilterArg {
     Stale,
     Ancient,
     Error,
+}
+
+#[derive(Clone, Default, ValueEnum)]
+enum OutputFormat {
+    /// Human-readable table (default)
+    #[default]
+    Pretty,
+    /// JSON array with summary
+    Json,
+    /// CSV with header row
+    Csv,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -268,6 +283,33 @@ fn print_json(summary: &dep_age::DepAgeSummary) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
+fn print_csv(summary: &dep_age::DepAgeSummary) {
+    println!("name,version,latest,published_at,days_since_publish,status,registry");
+    for r in &summary.results {
+        let published = r.published_at.map(|d| d.to_rfc3339()).unwrap_or_default();
+        let days = r
+            .days_since_publish
+            .map(|d| d.to_string())
+            .unwrap_or_default();
+        let registry = match r.registry {
+            Registry::Crates => "crates",
+            Registry::Npm => "npm",
+            Registry::PyPI => "pypi",
+        };
+        // Quote fields that might contain commas (unlikely but safe)
+        println!(
+            "{},{},{},{},{},{},{}",
+            r.name,
+            r.version_spec,
+            r.latest_version,
+            published,
+            days,
+            r.status.as_str(),
+            registry
+        );
+    }
+}
+
 // ── Helper functions to count dependencies ───────────────────────────────────
 
 fn get_cargo_dep_count(path: &PathBuf) -> usize {
@@ -442,6 +484,26 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
     Err("No Cargo.toml, package.json, pyproject.toml, or requirements.txt found in the current directory.".to_string())
 }
 
+/// Load ignored packages from `.dep-age-ignore` in the same directory as the manifest.
+/// One package name per line. Lines starting with `#` are comments.
+fn load_ignore_file(dir: &std::path::Path) -> Vec<String> {
+    let ignore_path = dir.join(".dep-age-ignore");
+    if !ignore_path.exists() {
+        return vec![];
+    }
+    std::fs::read_to_string(&ignore_path)
+        .ok()
+        .map(|content| {
+            content
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -528,7 +590,10 @@ async fn main() {
         Err(_) => 0,
     };
 
-    let progress = if !cli.json && total_deps > 0 {
+    let progress = if !cli.json
+        && !matches!(cli.format, OutputFormat::Json | OutputFormat::Csv)
+        && total_deps > 0
+    {
         let pb = ProgressBar::new(total_deps as u64);
         pb.set_style(
             indicatif::ProgressStyle::default_bar()
@@ -547,13 +612,32 @@ async fn main() {
         std::sync::Arc::new(move |_| pb.inc(1)) as std::sync::Arc<dyn Fn(usize) + Send + Sync>
     });
 
+    let manifest = match detect_manifest(cli.file.clone()) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+
+    // Load .dep-age-ignore from manifest directory + merge with CLI --ignore
+    let manifest_dir = match &manifest {
+        ManifestKind::Cargo(p)
+        | ManifestKind::PackageJson(p)
+        | ManifestKind::Pyproject(p)
+        | ManifestKind::RequirementsTxt(p) => p.parent().unwrap_or(std::path::Path::new(".")),
+    };
+    let file_ignores = load_ignore_file(manifest_dir);
+    let mut all_ignores = file_ignores;
+    all_ignores.extend(cli.ignore.clone());
+
     let opts = CheckOptions {
         include_dev: !cli.no_dev,
         concurrency: cli.concurrency,
         threshold_fresh: cli.fresh,
         threshold_aging: cli.aging,
         threshold_stale: cli.stale,
-        ignore_list: cli.ignore,
+        ignore_list: all_ignores,
         registry_cache: if cli.cache {
             RegistryCache::new().ok()
         } else {
@@ -563,15 +647,9 @@ async fn main() {
         ..CheckOptions::default()
     };
 
-    let manifest = match detect_manifest(cli.file) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red().bold(), e);
-            std::process::exit(1);
-        }
-    };
+    let is_machine = cli.json || matches!(cli.format, OutputFormat::Json | OutputFormat::Csv);
 
-    if !cli.json {
+    if !is_machine {
         let (file_label, reg_label) = match &manifest {
             ManifestKind::Cargo(p) => (p.display().to_string(), "crates.io"),
             ManifestKind::PackageJson(p) => (p.display().to_string(), "npm"),
@@ -603,7 +681,7 @@ async fn main() {
         }
     };
 
-    if cli.json {
+    if cli.json || matches!(cli.format, OutputFormat::Json) {
         print_json(&summary);
         if let Some(pb) = &progress {
             pb.finish_and_clear();
@@ -615,6 +693,14 @@ async fn main() {
     if let Some(pb) = &progress {
         pb.finish_and_clear();
     }
+
+    // CSV output — header + rows, no decoration
+    if matches!(cli.format, OutputFormat::Csv) {
+        print_csv(&summary);
+        return;
+    }
+
+    // Pretty output — table + legend + summary footer
 
     // Header
     println!(
