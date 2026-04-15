@@ -3,6 +3,9 @@ use colored::*;
 use dep_age::{
     check_cargo_toml, check_package_json, CheckOptions, DepResult, Registry, RegistryCache, Status,
 };
+use dep_age::config::ToolConfig;
+use dep_age::diff::{compute_diff, format_diff, PreviousRun};
+use dep_age::output::{format_github_checks, format_junit, format_sarif};
 use indicatif::ProgressBar;
 use std::path::PathBuf;
 
@@ -70,6 +73,18 @@ struct Cli {
     /// Exit code 1 when packages match this status or worse
     #[arg(long, value_enum, default_value = "ancient")]
     fail_on: FailOnArg,
+
+    /// Quiet mode: only output exit code (no table output)
+    #[arg(long, default_value_t = false)]
+    check: bool,
+
+    /// Path to config file (default: .dep-age.toml)
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    /// Show diff compared to last run
+    #[arg(long, default_value_t = false)]
+    diff: bool,
 }
 
 #[derive(Subcommand)]
@@ -107,6 +122,12 @@ enum OutputFormat {
     Json,
     /// CSV with header row
     Csv,
+    /// GitHub Actions workflow annotations
+    GithubChecks,
+    /// JUnit XML for CI systems
+    Junit,
+    /// SARIF for GitHub Advanced Security
+    Sarif,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -510,6 +531,19 @@ fn load_ignore_file(dir: &std::path::Path) -> Vec<String> {
 async fn main() {
     let cli = Cli::parse();
 
+    // Load config from file if specified or auto-detected
+    let config = if let Some(config_path) = &cli.config {
+        match ToolConfig::from_file(config_path) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("{} Failed to load config: {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        ToolConfig::detect()
+    };
+
     // Handle cache subcommands
     if let Some(Commands::Cache { action }) = cli.command {
         match action {
@@ -632,12 +666,15 @@ async fn main() {
     all_ignores.extend(cli.ignore.clone());
 
     let opts = CheckOptions {
-        include_dev: !cli.no_dev,
+        include_dev: !cli.no_dev && !config.as_ref().map(|c| c.get_no_dev()).unwrap_or(false),
         concurrency: cli.concurrency,
         threshold_fresh: cli.fresh,
         threshold_aging: cli.aging,
         threshold_stale: cli.stale,
         ignore_list: all_ignores,
+        crates_base_url: config.as_ref().and_then(|c| c.registry.as_ref()?.crates_base_url.clone()),
+        npm_base_url: config.as_ref().and_then(|c| c.registry.as_ref()?.npm_base_url.clone()),
+        pypi_base_url: config.as_ref().and_then(|c| c.registry.as_ref()?.pypi_base_url.clone()),
         registry_cache: if cli.cache {
             RegistryCache::new().ok()
         } else {
@@ -665,6 +702,14 @@ async fn main() {
         println!();
         print_legend();
     }
+
+    // Get manifest path for diff before consuming manifest
+    let manifest_path_for_diff = match &manifest {
+        ManifestKind::Cargo(p)
+        | ManifestKind::PackageJson(p)
+        | ManifestKind::Pyproject(p)
+        | ManifestKind::RequirementsTxt(p) => p.clone(),
+    };
 
     let summary = match manifest {
         ManifestKind::Cargo(p) => check_cargo_toml(p, &opts).await,
@@ -697,6 +742,44 @@ async fn main() {
     // CSV output — header + rows, no decoration
     if matches!(cli.format, OutputFormat::Csv) {
         print_csv(&summary);
+        return;
+    }
+
+    // GitHub Actions annotations
+    if matches!(cli.format, OutputFormat::GithubChecks) {
+        print!("{}", format_github_checks(&summary));
+        return;
+    }
+
+    // JUnit XML output
+    if matches!(cli.format, OutputFormat::Junit) {
+        match format_junit(&summary) {
+            Ok(output) => println!("{}", output),
+            Err(e) => {
+                eprintln!("{} {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // SARIF output
+    if matches!(cli.format, OutputFormat::Sarif) {
+        match format_sarif(&summary) {
+            Ok(output) => println!("{}", output),
+            Err(e) => {
+                eprintln!("{} {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // --check mode: quiet, just exit code
+    if cli.check {
+        if should_fail(&summary, &cli.fail_on) {
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -778,6 +861,32 @@ async fn main() {
     }
 
     println!();
+
+    // Handle diff output
+    if cli.diff {
+        let manifest_dir = manifest_path_for_diff.parent().unwrap_or(std::path::Path::new("."));
+
+        // Load previous run if exists
+        let previous = PreviousRun::load(manifest_dir);
+        
+        if let Some(prev) = previous {
+            let diffs = compute_diff(&summary, &prev);
+            println!("{}", format_diff(&diffs));
+        } else {
+            println!("No previous run data found. Run without --diff first to establish baseline.");
+        }
+
+        // Save current run for next comparison
+        let prev_run = PreviousRun::from_summary(&summary, &manifest_dir.to_string_lossy());
+        if let Err(e) = prev_run.save(manifest_dir) {
+            eprintln!("Warning: Failed to save diff history: {}", e);
+        }
+    } else {
+        // Auto-save for future diffs (only on non-diff runs)
+        let manifest_dir = manifest_path_for_diff.parent().unwrap_or(std::path::Path::new("."));
+        let prev_run = PreviousRun::from_summary(&summary, &manifest_dir.to_string_lossy());
+        let _ = prev_run.save(manifest_dir);
+    }
 
     // Exit with non-zero based on --fail-on flag (useful for CI)
     if should_fail(&summary, &cli.fail_on) {

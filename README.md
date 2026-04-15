@@ -85,6 +85,27 @@ dep-age --sort status     # grouped by status
 # Output formats
 dep-age --format csv      # CSV output (pipeable to spreadsheets)
 dep-age --format json     # JSON output (alternative to --json)
+dep-age --format github-checks  # GitHub Actions annotations
+dep-age --format junit          # JUnit XML for CI systems
+dep-age --format sarif         # SARIF for GitHub Advanced Security
+
+# Config file (create .dep-age.toml in project root)
+# [tool.dep-age]
+# fresh = 60
+# aging = 180
+# stale = 540
+# no-dev = true
+# fail-on = "stale"
+# ignore = ["time", "old-crate"]
+
+# Custom config file
+dep-age --config path/to/dep-age.toml
+
+# Check mode - quiet, exit code only
+dep-age --check
+
+# Diff - show changes since last run
+dep-age --diff
 
 # Ignore file: create a `.dep-age-ignore` in your project root
 # One package name per line, # comments supported
@@ -112,7 +133,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dep-age = "0.1"
+dep-age = "0.1.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -263,6 +284,25 @@ if summary.is_all_fresh() {
   run: dep-age --no-dev --fail-on stale
 ```
 
+### GitHub Actions with SARIF (Advanced Security)
+
+```yaml
+- name: Check dependency ages
+  run: dep-age --format sarif --output dep-age.sarif
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: dep-age.sarif
+```
+
+### GitHub Actions with GitHub Checks
+
+```yaml
+- name: Check dependency ages
+  run: dep-age --format github-checks >> $GITHUB_OUTPUT
+```
+
 ### JSON output + jq
 
 ```bash
@@ -276,11 +316,27 @@ dep-age --no-dev && echo "all good"
 dep-age --json > dep-age-report.json
 ```
 
+### JUnit XML (Jenkins, etc.)
+
+```bash
+dep-age --format junit > test-results.xml
+```
+
 ### With cache (faster re-runs)
 
 ```bash
 # Cache registry responses (1h TTL) for faster re-runs
 dep-age --cache --no-dev
+```
+
+### Diff tracking
+
+```bash
+# First run - establishes baseline
+dep-age --no-dev
+
+# Second run - shows changes
+dep-age --no-dev --diff
 ```
 
 ---

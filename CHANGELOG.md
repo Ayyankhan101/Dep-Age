@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-04-15
+
+### Added
+- **Output Formats**:
+  - `--format github-checks` - GitHub Actions workflow annotations
+  - `--format junit` - JUnit XML for CI systems (Jenkins, etc.)
+  - `--format sarif` - SARIF for GitHub Advanced Security
+- **Configuration File**:
+  - `--config <path>` - Custom config file path
+  - Auto-detects `.dep-age.toml` or `dep-age.toml`
+  - Supports `[tool.dep-age]` section with thresholds, ignore lists, registry URLs
+- **Check Mode**:
+  - `--check` - Quiet mode, only exit code (no table output)
+- **Diff/Trend Tracking**:
+  - `--diff` - Show changes since last run
+  - Auto-saves results to `.dep-age-history.json`
+  - Shows newly stale, improved, and new packages
+
+### Changed
+- Improved error handling for network requests
+- Added quick-xml dependency for XML generation
+
 ## [0.1.1] - 2026-04-13
 
 ### Added

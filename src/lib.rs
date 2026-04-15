@@ -28,6 +28,10 @@ use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+
+pub mod config;
+pub mod diff;
+pub mod output;
 use std::collections::HashMap;
 
 /// User-Agent header for all registry requests.
