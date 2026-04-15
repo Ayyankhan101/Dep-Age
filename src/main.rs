@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::*;
-use dep_age::{
-    check_cargo_toml, check_package_json, CheckOptions, DepResult, Registry, RegistryCache, Status,
-};
 use dep_age::config::ToolConfig;
 use dep_age::diff::{compute_diff, format_diff, PreviousRun};
 use dep_age::output::{format_github_checks, format_junit, format_sarif};
+use dep_age::{
+    check_cargo_toml, check_package_json, CheckOptions, DepResult, Registry, RegistryCache, Status,
+};
 use indicatif::ProgressBar;
 use std::path::PathBuf;
 
@@ -672,16 +672,21 @@ async fn main() {
         threshold_aging: cli.aging,
         threshold_stale: cli.stale,
         ignore_list: all_ignores,
-        crates_base_url: config.as_ref().and_then(|c| c.registry.as_ref()?.crates_base_url.clone()),
-        npm_base_url: config.as_ref().and_then(|c| c.registry.as_ref()?.npm_base_url.clone()),
-        pypi_base_url: config.as_ref().and_then(|c| c.registry.as_ref()?.pypi_base_url.clone()),
+        crates_base_url: config
+            .as_ref()
+            .and_then(|c| c.registry.as_ref()?.crates_base_url.clone()),
+        npm_base_url: config
+            .as_ref()
+            .and_then(|c| c.registry.as_ref()?.npm_base_url.clone()),
+        pypi_base_url: config
+            .as_ref()
+            .and_then(|c| c.registry.as_ref()?.pypi_base_url.clone()),
         registry_cache: if cli.cache {
             RegistryCache::new().ok()
         } else {
             None
         },
         on_progress,
-        ..CheckOptions::default()
     };
 
     let is_machine = cli.json || matches!(cli.format, OutputFormat::Json | OutputFormat::Csv);
@@ -864,11 +869,13 @@ async fn main() {
 
     // Handle diff output
     if cli.diff {
-        let manifest_dir = manifest_path_for_diff.parent().unwrap_or(std::path::Path::new("."));
+        let manifest_dir = manifest_path_for_diff
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
 
         // Load previous run if exists
         let previous = PreviousRun::load(manifest_dir);
-        
+
         if let Some(prev) = previous {
             let diffs = compute_diff(&summary, &prev);
             println!("{}", format_diff(&diffs));
@@ -883,7 +890,9 @@ async fn main() {
         }
     } else {
         // Auto-save for future diffs (only on non-diff runs)
-        let manifest_dir = manifest_path_for_diff.parent().unwrap_or(std::path::Path::new("."));
+        let manifest_dir = manifest_path_for_diff
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
         let prev_run = PreviousRun::from_summary(&summary, &manifest_dir.to_string_lossy());
         let _ = prev_run.save(manifest_dir);
     }
