@@ -719,7 +719,11 @@ async fn main() {
         on_progress,
     };
 
-    let is_machine = cli.json || matches!(cli.format, OutputFormat::Json | OutputFormat::Csv | OutputFormat::Ndjson);
+    let is_machine = cli.json
+        || matches!(
+            cli.format,
+            OutputFormat::Json | OutputFormat::Csv | OutputFormat::Ndjson
+        );
 
     if !is_machine {
         let (file_label, reg_label) = match &manifest {

@@ -935,7 +935,12 @@ fn build_go_result(
     }
 }
 
-async fn fetch_go_module(client: &Client, name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+async fn fetch_go_module(
+    client: &Client,
+    name: &str,
+    version: &str,
+    opts: &CheckOptions,
+) -> DepResult {
     let base_url = "https://proxy.golang.org";
     let clean_ver = version.trim_start_matches(['v', '^']);
     let url = format!("{}/{}/@v/{}.info", base_url, name, clean_ver);
@@ -949,31 +954,29 @@ async fn fetch_go_module(client: &Client, name: &str, version: &str, opts: &Chec
     }
 
     match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.text().await {
-                Ok(text) => {
-                    let data = GoApiResponse {
-                        Version: clean_ver.to_string(),
-                        Time: text,
-                    };
-                    if let Some(cache) = &opts.registry_cache {
-                        if let Ok(json) = serde_json::to_vec(&data) {
-                            cache.set(&url, json);
-                        }
+        Ok(resp) if resp.status().is_success() => match resp.text().await {
+            Ok(text) => {
+                let data = GoApiResponse {
+                    Version: clean_ver.to_string(),
+                    Time: text,
+                };
+                if let Some(cache) = &opts.registry_cache {
+                    if let Ok(json) = serde_json::to_vec(&data) {
+                        cache.set(&url, json);
                     }
-                    build_go_result(name, version, data, opts)
                 }
-                Err(e) => DepResult {
-                    name: name.to_string(),
-                    version_spec: version.to_string(),
-                    latest_version: "unknown".to_string(),
-                    published_at: None,
-                    days_since_publish: None,
-                    status: Status::Error(e.to_string()),
-                    registry: Registry::Go,
-                },
+                build_go_result(name, version, data, opts)
             }
-        }
+            Err(e) => DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Go,
+            },
+        },
         Ok(resp) => DepResult {
             name: name.to_string(),
             version_spec: version.to_string(),
@@ -1047,7 +1050,12 @@ fn build_docker_result(
     }
 }
 
-async fn fetch_docker_image(client: &Client, name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+async fn fetch_docker_image(
+    client: &Client,
+    name: &str,
+    version: &str,
+    opts: &CheckOptions,
+) -> DepResult {
     let (image, tag) = if version.contains(':') {
         let parts: Vec<&str> = version.splitn(2, ':').collect();
         (parts[0], parts[1])
@@ -1060,35 +1068,41 @@ async fn fetch_docker_image(client: &Client, name: &str, version: &str, opts: &C
     if let Some(cache) = &opts.registry_cache {
         if let Some(cached_data) = cache.get(&url) {
             if let Ok(data) = serde_json::from_slice::<DockerHubResponse>(&cached_data) {
-                let last_updated = data.tags.iter().find(|t| t.name == tag).and_then(|t| t.last_updated.clone());
+                let last_updated = data
+                    .tags
+                    .iter()
+                    .find(|t| t.name == tag)
+                    .and_then(|t| t.last_updated.clone());
                 return build_docker_result(name, version, last_updated, opts);
             }
         }
     }
 
     match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<DockerHubResponse>().await {
-                Ok(data) => {
-                    if let Some(cache) = &opts.registry_cache {
-                        if let Ok(json) = serde_json::to_vec(&data) {
-                            cache.set(&url, json);
-                        }
+        Ok(resp) if resp.status().is_success() => match resp.json::<DockerHubResponse>().await {
+            Ok(data) => {
+                if let Some(cache) = &opts.registry_cache {
+                    if let Ok(json) = serde_json::to_vec(&data) {
+                        cache.set(&url, json);
                     }
-                    let last_updated = data.tags.iter().find(|t| t.name == tag).and_then(|t| t.last_updated.clone());
-                    build_docker_result(name, version, last_updated, opts)
                 }
-                Err(e) => DepResult {
-                    name: name.to_string(),
-                    version_spec: version.to_string(),
-                    latest_version: "unknown".to_string(),
-                    published_at: None,
-                    days_since_publish: None,
-                    status: Status::Error(e.to_string()),
-                    registry: Registry::Docker,
-                },
+                let last_updated = data
+                    .tags
+                    .iter()
+                    .find(|t| t.name == tag)
+                    .and_then(|t| t.last_updated.clone());
+                build_docker_result(name, version, last_updated, opts)
             }
-        }
+            Err(e) => DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Docker,
+            },
+        },
         Ok(resp) => DepResult {
             name: name.to_string(),
             version_spec: version.to_string(),
@@ -1733,7 +1747,11 @@ pub async fn check_go_mod(
 
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with("module ") || line.starts_with("go ") {
+        if line.is_empty()
+            || line.starts_with("//")
+            || line.starts_with("module ")
+            || line.starts_with("go ")
+        {
             continue;
         }
         if line.starts_with("require (") {
