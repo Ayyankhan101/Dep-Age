@@ -35,7 +35,7 @@ fn test_cli_no_manifest_found() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("No Cargo.toml, package.json, pyproject.toml, or requirements.txt found")
+        stderr.contains("No Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, or docker-compose.yml found")
     );
     assert!(!output.status.success());
 }

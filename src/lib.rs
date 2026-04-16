@@ -320,6 +320,8 @@ pub enum Registry {
     Crates,
     Npm,
     PyPI,
+    Go,
+    Docker,
 }
 
 /// Aggregated summary of all dependencies checked.
@@ -478,6 +480,62 @@ struct PyPiReleaseFile {
 struct PyPiApiResponse {
     info: PyPiInfo,
     releases: HashMap<String, Vec<PyPiReleaseFile>>,
+}
+
+// ── Go Module API response types ─────────────────────────────────────────────────
+
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code, non_snake_case)]
+struct GoVersionInfo {
+    Version: String,
+    Time: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code, non_snake_case)]
+struct GoApiResponse {
+    Version: String,
+    Time: String,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct GoModFile {
+    #[serde(rename = "Module")]
+    module: Option<GoModule>,
+    #[serde(rename = "Require")]
+    require: Option<Vec<GoRequire>>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct GoModule {
+    #[serde(rename = "Path")]
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct GoRequire {
+    #[serde(rename = "Path")]
+    path: String,
+    #[serde(rename = "Version")]
+    version: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct GoSumEntry {
+    #[serde(rename = "Path")]
+    path: String,
+    #[serde(rename = "Version")]
+    version: String,
+    #[serde(rename = "Info")]
+    info: Option<String>,
+    #[serde(rename = "Zip")]
+    zip: Option<String>,
+    #[serde(rename = "Sum")]
+    sum: Option<String>,
 }
 
 // ── TOML manifest types ───────────────────────────────────────────────────────
@@ -838,6 +896,216 @@ async fn fetch_pypi(client: &Client, name: &str, version: &str, opts: &CheckOpti
             days_since_publish: None,
             status: Status::Error(e.to_string()),
             registry: Registry::PyPI,
+        },
+    }
+}
+
+// ── Go Module fetch logic ──────────────────────────────────────────────────────
+
+fn build_go_result(
+    name: &str,
+    version: &str,
+    data: GoApiResponse,
+    opts: &CheckOptions,
+) -> DepResult {
+    let publish_str = &data.Time;
+    match DateTime::parse_from_rfc3339(publish_str) {
+        Ok(dt) => {
+            let published_at: DateTime<Utc> = dt.with_timezone(&Utc);
+            let days = (Utc::now() - published_at).num_days();
+            DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: data.Version.clone(),
+                published_at: Some(published_at),
+                days_since_publish: Some(days),
+                status: classify(days, opts),
+                registry: Registry::Go,
+            }
+        }
+        Err(e) => DepResult {
+            name: name.to_string(),
+            version_spec: version.to_string(),
+            latest_version: data.Version,
+            published_at: None,
+            days_since_publish: None,
+            status: Status::Error(e.to_string()),
+            registry: Registry::Go,
+        },
+    }
+}
+
+async fn fetch_go_module(client: &Client, name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let base_url = "https://proxy.golang.org";
+    let clean_ver = version.trim_start_matches(['v', '^']);
+    let url = format!("{}/{}/@v/{}.info", base_url, name, clean_ver);
+
+    if let Some(cache) = &opts.registry_cache {
+        if let Some(cached_data) = cache.get(&url) {
+            if let Ok(data) = serde_json::from_slice::<GoApiResponse>(&cached_data) {
+                return build_go_result(name, version, data, opts);
+            }
+        }
+    }
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.text().await {
+                Ok(text) => {
+                    let data = GoApiResponse {
+                        Version: clean_ver.to_string(),
+                        Time: text,
+                    };
+                    if let Some(cache) = &opts.registry_cache {
+                        if let Ok(json) = serde_json::to_vec(&data) {
+                            cache.set(&url, json);
+                        }
+                    }
+                    build_go_result(name, version, data, opts)
+                }
+                Err(e) => DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(e.to_string()),
+                    registry: Registry::Go,
+                },
+            }
+        }
+        Ok(resp) => DepResult {
+            name: name.to_string(),
+            version_spec: version.to_string(),
+            latest_version: "unknown".to_string(),
+            published_at: None,
+            days_since_publish: None,
+            status: Status::Error(format!("Registry returned {}", resp.status())),
+            registry: Registry::Go,
+        },
+        Err(e) => DepResult {
+            name: name.to_string(),
+            version_spec: version.to_string(),
+            latest_version: "unknown".to_string(),
+            published_at: None,
+            days_since_publish: None,
+            status: Status::Error(e.to_string()),
+            registry: Registry::Go,
+        },
+    }
+}
+
+// ── Docker/OCI Image fetch logic ───────────────────────────────────────────────
+
+#[derive(Deserialize, Serialize)]
+struct DockerHubResponse {
+    name: String,
+    tags: Vec<DockerTag>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DockerTag {
+    name: String,
+    last_updated: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code)]
+struct DockerHubTokenResponse {
+    token: String,
+}
+
+fn build_docker_result(
+    name: &str,
+    version: &str,
+    last_updated: Option<String>,
+    opts: &CheckOptions,
+) -> DepResult {
+    match last_updated.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()) {
+        Some(dt) => {
+            let published_at: DateTime<Utc> = dt.with_timezone(&Utc);
+            let days = (Utc::now() - published_at).num_days();
+            DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: version.to_string(),
+                published_at: Some(published_at),
+                days_since_publish: Some(days),
+                status: classify(days, opts),
+                registry: Registry::Docker,
+            }
+        }
+        None => DepResult {
+            name: name.to_string(),
+            version_spec: version.to_string(),
+            latest_version: version.to_string(),
+            published_at: None,
+            days_since_publish: None,
+            status: Status::Error("No publish time found".to_string()),
+            registry: Registry::Docker,
+        },
+    }
+}
+
+async fn fetch_docker_image(client: &Client, name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let (image, tag) = if version.contains(':') {
+        let parts: Vec<&str> = version.splitn(2, ':').collect();
+        (parts[0], parts[1])
+    } else {
+        (name, version)
+    };
+
+    let url = format!("https://registry.hub.docker.com/v2/repositories/{}", image);
+
+    if let Some(cache) = &opts.registry_cache {
+        if let Some(cached_data) = cache.get(&url) {
+            if let Ok(data) = serde_json::from_slice::<DockerHubResponse>(&cached_data) {
+                let last_updated = data.tags.iter().find(|t| t.name == tag).and_then(|t| t.last_updated.clone());
+                return build_docker_result(name, version, last_updated, opts);
+            }
+        }
+    }
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<DockerHubResponse>().await {
+                Ok(data) => {
+                    if let Some(cache) = &opts.registry_cache {
+                        if let Ok(json) = serde_json::to_vec(&data) {
+                            cache.set(&url, json);
+                        }
+                    }
+                    let last_updated = data.tags.iter().find(|t| t.name == tag).and_then(|t| t.last_updated.clone());
+                    build_docker_result(name, version, last_updated, opts)
+                }
+                Err(e) => DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(e.to_string()),
+                    registry: Registry::Docker,
+                },
+            }
+        }
+        Ok(resp) => DepResult {
+            name: name.to_string(),
+            version_spec: version.to_string(),
+            latest_version: "unknown".to_string(),
+            published_at: None,
+            days_since_publish: None,
+            status: Status::Error(format!("Registry returned {}", resp.status())),
+            registry: Registry::Docker,
+        },
+        Err(e) => DepResult {
+            name: name.to_string(),
+            version_spec: version.to_string(),
+            latest_version: "unknown".to_string(),
+            published_at: None,
+            days_since_publish: None,
+            status: Status::Error(e.to_string()),
+            registry: Registry::Docker,
         },
     }
 }
@@ -1430,4 +1698,175 @@ fn extract_deps_from_manifest(
     }
 
     Ok(deps)
+}
+
+/// Check a single Go module by name.
+pub async fn check_go_module(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let client = Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .expect("failed to build HTTP client");
+    fetch_go_module(&client, name, version, opts).await
+}
+
+/// Check all dependencies listed in a `go.mod` file.
+///
+/// # Example
+/// ```rust,no_run
+/// # use dep_age::{check_go_mod, CheckOptions};
+/// # #[tokio::main] async fn main() {
+/// let summary = check_go_mod("go.mod", &CheckOptions::default()).await.unwrap();
+/// println!("{} stale packages", summary.stale);
+/// # }
+/// ```
+pub async fn check_go_mod(
+    path: impl AsRef<Path>,
+    opts: &CheckOptions,
+) -> Result<DepAgeSummary, DepAgeError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Err(DepAgeError::FileNotFound(path.display().to_string()));
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let mut deps: HashMap<String, String> = HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") || line.starts_with("module ") || line.starts_with("go ") {
+            continue;
+        }
+        if line.starts_with("require (") {
+            continue;
+        }
+        if line == ")" {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let name = parts[0].to_string();
+            let version = parts[1].to_string();
+            deps.insert(name, version);
+        }
+    }
+
+    if deps.is_empty() {
+        return Ok(build_summary(vec![]));
+    }
+
+    let client = Client::builder().user_agent(USER_AGENT).build()?;
+
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
+    let on_progress = opts.on_progress.clone();
+    let results = stream::iter(entries)
+        .enumerate()
+        .map(|(i, (name, ver))| {
+            let client = client.clone();
+            let opts = opts.clone();
+            let on_progress = on_progress.clone();
+            async move {
+                let result = fetch_go_module(&client, &name, &ver, &opts).await;
+                if let Some(cb) = on_progress {
+                    cb(i + 1);
+                }
+                result
+            }
+        })
+        .buffer_unordered(opts.concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+    Ok(build_summary(results))
+}
+
+/// Check a single Docker image by name.
+pub async fn check_docker_image(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let client = Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .expect("failed to build HTTP client");
+    fetch_docker_image(&client, name, version, opts).await
+}
+
+/// Check Docker images listed in a Docker Compose file.
+///
+/// # Example
+/// ```rust,no_run
+/// # use dep_age::{check_docker_compose, CheckOptions};
+/// # #[tokio::main] async fn main() {
+/// let summary = check_docker_compose("docker-compose.yml", &CheckOptions::default()).await.unwrap();
+/// println!("{} stale images", summary.stale);
+/// # }
+/// ```
+pub async fn check_docker_compose(
+    path: impl AsRef<Path>,
+    opts: &CheckOptions,
+) -> Result<DepAgeSummary, DepAgeError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Err(DepAgeError::FileNotFound(path.display().to_string()));
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let mut deps: HashMap<String, String> = HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with("image:") {
+            let image = line.trim_start_matches("image:").trim();
+            if !image.is_empty() {
+                let parts: Vec<&str> = image.splitn(2, ':').collect();
+                let name = parts[0].to_string();
+                let version = parts.get(1).unwrap_or(&"latest").to_string();
+                deps.insert(name, version);
+            }
+        }
+    }
+
+    if deps.is_empty() {
+        return Ok(build_summary(vec![]));
+    }
+
+    let client = Client::builder().user_agent(USER_AGENT).build()?;
+
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
+    let on_progress = opts.on_progress.clone();
+    let results = stream::iter(entries)
+        .enumerate()
+        .map(|(i, (name, ver))| {
+            let client = client.clone();
+            let opts = opts.clone();
+            let on_progress = on_progress.clone();
+            async move {
+                let result = fetch_docker_image(&client, &name, &ver, &opts).await;
+                if let Some(cb) = on_progress {
+                    cb(i + 1);
+                }
+                result
+            }
+        })
+        .buffer_unordered(opts.concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+    Ok(build_summary(results))
 }

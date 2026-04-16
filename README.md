@@ -6,7 +6,7 @@
 [![CI](https://github.com/Ayyankhan101/Dep-Age/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayyankhan101/Dep-Age/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> Check how old your dependencies are — for **Cargo.toml**, **package.json**, **pyproject.toml**, and **requirements.txt**.
+> Check how old your dependencies are — for **Cargo.toml**, **package.json**, **pyproject.toml**, **requirements.txt**, **go.mod**, and **docker-compose.yml**.
 
 See at a glance which packages haven't been updated in months or years. Spot stale and abandoned dependencies before they become a security or compatibility problem.
 
@@ -53,6 +53,8 @@ dep-age Cargo.toml
 dep-age path/to/package.json
 dep-age path/to/pyproject.toml
 dep-age path/to/requirements.txt
+dep-age path/to/go.mod
+dep-age path/to/docker-compose.yml
 
 # Skip dev-dependencies
 dep-age --no-dev
@@ -85,6 +87,7 @@ dep-age --sort status     # grouped by status
 # Output formats
 dep-age --format csv      # CSV output (pipeable to spreadsheets)
 dep-age --format json     # JSON output (alternative to --json)
+dep-age --format ndjson   # Newline-delimited JSON (streaming-friendly)
 dep-age --format github-checks  # GitHub Actions annotations
 dep-age --format junit          # JUnit XML for CI systems
 dep-age --format sarif         # SARIF for GitHub Advanced Security
@@ -133,7 +136,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dep-age = "0.1.2"
+dep-age = "0.1.3"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -215,6 +218,36 @@ async fn main() {
 
     let summary = check_requirements_txt("requirements.txt", &opts).await.unwrap();
     println!("Ancient Python packages: {}", summary.ancient);
+}
+```
+
+### Check a `go.mod`
+
+```rust
+use dep_age::{check_go_mod, CheckOptions};
+
+#[tokio::main]
+async fn main() {
+    let opts = CheckOptions::default();
+
+    let summary = check_go_mod("go.mod", &opts).await.unwrap();
+    println!("Total Go modules: {}", summary.total);
+    println!("Stale: {}", summary.stale);
+}
+```
+
+### Check a Docker Compose file
+
+```rust
+use dep_age::{check_docker_compose, CheckOptions};
+
+#[tokio::main]
+async fn main() {
+    let opts = CheckOptions::default();
+
+    let summary = check_docker_compose("docker-compose.yml", &opts).await.unwrap();
+    println!("Total Docker images: {}", summary.total);
+    println!("Ancient images: {}", summary.ancient);
 }
 ```
 

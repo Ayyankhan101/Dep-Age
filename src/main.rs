@@ -128,6 +128,8 @@ enum OutputFormat {
     Junit,
     /// SARIF for GitHub Advanced Security
     Sarif,
+    /// Newline-delimited JSON (streaming-friendly)
+    Ndjson,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -212,6 +214,8 @@ fn print_row(r: &DepResult) {
         Registry::Crates => "crates".dimmed(),
         Registry::Npm => "npm".dimmed(),
         Registry::PyPI => "pypi".dimmed(),
+        Registry::Go => "go".dimmed(),
+        Registry::Docker => "docker".dimmed(),
     };
 
     println!(
@@ -284,7 +288,7 @@ fn print_json(summary: &dep_age::DepAgeSummary) {
                 "publishedAt": r.published_at.map(|d| d.to_rfc3339()),
                 "daysSincePublish": r.days_since_publish,
                 "status": r.status.as_str(),
-                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi" },
+                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker" },
             })
         })
         .collect();
@@ -316,6 +320,8 @@ fn print_csv(summary: &dep_age::DepAgeSummary) {
             Registry::Crates => "crates",
             Registry::Npm => "npm",
             Registry::PyPI => "pypi",
+            Registry::Go => "go",
+            Registry::Docker => "docker",
         };
         // Quote fields that might contain commas (unlikely but safe)
         println!(
@@ -456,6 +462,8 @@ enum ManifestKind {
     PackageJson(PathBuf),
     Pyproject(PathBuf),
     RequirementsTxt(PathBuf),
+    GoMod(PathBuf),
+    DockerCompose(PathBuf),
 }
 
 fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
@@ -477,8 +485,14 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
         if name == "requirements.txt" || name.ends_with(".requirements.txt") {
             return Ok(ManifestKind::RequirementsTxt(p));
         }
+        if name == "go.mod" {
+            return Ok(ManifestKind::GoMod(p));
+        }
+        if name == "docker-compose.yml" || name == "docker-compose.yaml" {
+            return Ok(ManifestKind::DockerCompose(p));
+        }
         return Err(format!(
-            "Unrecognised file: {}. Pass Cargo.toml, package.json, pyproject.toml, or requirements.txt.",
+            "Unrecognised file: {}. Pass Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, or docker-compose.yml.",
             p.display()
         ));
     }
@@ -488,6 +502,9 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
     let pkg = PathBuf::from("package.json");
     let pyproject = PathBuf::from("pyproject.toml");
     let requirements = PathBuf::from("requirements.txt");
+    let go_mod = PathBuf::from("go.mod");
+    let docker_compose = PathBuf::from("docker-compose.yml");
+    let docker_compose_yaml = PathBuf::from("docker-compose.yaml");
 
     if cargo.exists() {
         return Ok(ManifestKind::Cargo(cargo));
@@ -501,8 +518,17 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
     if requirements.exists() {
         return Ok(ManifestKind::RequirementsTxt(requirements));
     }
+    if go_mod.exists() {
+        return Ok(ManifestKind::GoMod(go_mod));
+    }
+    if docker_compose.exists() {
+        return Ok(ManifestKind::DockerCompose(docker_compose));
+    }
+    if docker_compose_yaml.exists() {
+        return Ok(ManifestKind::DockerCompose(docker_compose_yaml));
+    }
 
-    Err("No Cargo.toml, package.json, pyproject.toml, or requirements.txt found in the current directory.".to_string())
+    Err("No Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, or docker-compose.yml found in the current directory.".to_string())
 }
 
 /// Load ignored packages from `.dep-age-ignore` in the same directory as the manifest.
@@ -620,6 +646,8 @@ async fn main() {
             ManifestKind::PackageJson(p) => get_package_json_dep_count(p),
             ManifestKind::Pyproject(p) => get_pyproject_dep_count(p),
             ManifestKind::RequirementsTxt(p) => get_requirements_dep_count(p),
+            ManifestKind::GoMod(_) => 0,
+            ManifestKind::DockerCompose(_) => 0,
         },
         Err(_) => 0,
     };
@@ -659,7 +687,9 @@ async fn main() {
         ManifestKind::Cargo(p)
         | ManifestKind::PackageJson(p)
         | ManifestKind::Pyproject(p)
-        | ManifestKind::RequirementsTxt(p) => p.parent().unwrap_or(std::path::Path::new(".")),
+        | ManifestKind::RequirementsTxt(p)
+        | ManifestKind::GoMod(p)
+        | ManifestKind::DockerCompose(p) => p.parent().unwrap_or(std::path::Path::new(".")),
     };
     let file_ignores = load_ignore_file(manifest_dir);
     let mut all_ignores = file_ignores;
@@ -689,7 +719,7 @@ async fn main() {
         on_progress,
     };
 
-    let is_machine = cli.json || matches!(cli.format, OutputFormat::Json | OutputFormat::Csv);
+    let is_machine = cli.json || matches!(cli.format, OutputFormat::Json | OutputFormat::Csv | OutputFormat::Ndjson);
 
     if !is_machine {
         let (file_label, reg_label) = match &manifest {
@@ -697,6 +727,8 @@ async fn main() {
             ManifestKind::PackageJson(p) => (p.display().to_string(), "npm"),
             ManifestKind::Pyproject(p) => (p.display().to_string(), "PyPI"),
             ManifestKind::RequirementsTxt(p) => (p.display().to_string(), "PyPI"),
+            ManifestKind::GoMod(p) => (p.display().to_string(), "go"),
+            ManifestKind::DockerCompose(p) => (p.display().to_string(), "docker"),
         };
         println!();
         println!(
@@ -713,7 +745,9 @@ async fn main() {
         ManifestKind::Cargo(p)
         | ManifestKind::PackageJson(p)
         | ManifestKind::Pyproject(p)
-        | ManifestKind::RequirementsTxt(p) => p.clone(),
+        | ManifestKind::RequirementsTxt(p)
+        | ManifestKind::GoMod(p)
+        | ManifestKind::DockerCompose(p) => p.clone(),
     };
 
     let summary = match manifest {
@@ -721,6 +755,8 @@ async fn main() {
         ManifestKind::PackageJson(p) => check_package_json(p, &opts).await,
         ManifestKind::Pyproject(p) => dep_age::check_pyproject_toml(p, &opts).await,
         ManifestKind::RequirementsTxt(p) => dep_age::check_requirements_txt(p, &opts).await,
+        ManifestKind::GoMod(p) => dep_age::check_go_mod(p, &opts).await,
+        ManifestKind::DockerCompose(p) => dep_age::check_docker_compose(p, &opts).await,
     };
 
     let summary = match summary {
@@ -776,6 +812,23 @@ async fn main() {
                 eprintln!("{} {}", "error:".red().bold(), e);
                 std::process::exit(1);
             }
+        }
+        return;
+    }
+
+    // NDJSON output - newline-delimited JSON for streaming
+    if matches!(cli.format, OutputFormat::Ndjson) {
+        for r in &summary.results {
+            let json = serde_json::json!({
+                "name": r.name,
+                "version": r.version_spec,
+                "latestVersion": r.latest_version,
+                "publishedAt": r.published_at.map(|d| d.to_rfc3339()),
+                "daysSincePublish": r.days_since_publish,
+                "status": r.status.as_str(),
+                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker" },
+            });
+            println!("{}", json);
         }
         return;
     }

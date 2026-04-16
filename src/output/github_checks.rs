@@ -68,6 +68,8 @@ fn format_error_message(r: &DepResult, error: &str) -> String {
             Registry::Crates => "crates.io",
             Registry::Npm => "npm",
             Registry::PyPI => "PyPI",
+            Registry::Go => "go",
+            Registry::Docker => "docker",
         },
         error
     )
@@ -82,6 +84,8 @@ fn registry_url(r: &DepResult) -> String {
         Registry::Crates => format!("https://crates.io/crates/{}", r.name),
         Registry::Npm => format!("https://www.npmjs.com/package/{}", r.name),
         Registry::PyPI => format!("https://pypi.org/project/{}", r.name),
+        Registry::Go => format!("https://pkg.go.dev/{}", r.name),
+        Registry::Docker => format!("https://hub.docker.com/r/{}", r.name),
     }
 }
 
