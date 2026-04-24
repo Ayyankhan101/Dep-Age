@@ -85,6 +85,13 @@ struct Cli {
     /// Show diff compared to last run
     #[arg(long, default_value_t = false)]
     diff: bool,
+
+    /// Output theme: auto (default), dark, light
+    #[arg(long, default_value = "auto")]
+    theme: ThemeArg,
+    // TODO: Interactive TUI mode with live updates
+    // #[arg(long, default_value_t = false)]
+    // tui: bool,
 }
 
 #[derive(Subcommand)]
@@ -113,6 +120,13 @@ enum FilterArg {
     Error,
 }
 
+#[derive(Clone, ValueEnum)]
+enum ThemeArg {
+    Auto,
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Default, ValueEnum)]
 enum OutputFormat {
     /// Human-readable table (default)
@@ -130,6 +144,10 @@ enum OutputFormat {
     Sarif,
     /// Newline-delimited JSON (streaming-friendly)
     Ndjson,
+    /// HTML report
+    Html,
+    /// GitHub Actions step summary
+    StepSummary,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -157,6 +175,69 @@ enum SortArg {
 }
 
 // ── Display helpers ─────────────────────────────────────────────────────────
+
+pub struct Theme {
+    pub fresh: ColoredString,
+    pub aging: ColoredString,
+    pub stale: ColoredString,
+    pub ancient: ColoredString,
+    pub error: ColoredString,
+    pub check: ColoredString,
+    pub dim: ColoredString,
+    pub icon_ok: ColoredString,
+    pub icon_warn: ColoredString,
+    pub icon_bad: ColoredString,
+    pub icon_err: ColoredString,
+}
+
+impl Theme {
+    pub fn dark() -> Self {
+        Theme {
+            fresh: "fresh".green(),
+            aging: "aging".yellow(),
+            stale: "stale".red(),
+            ancient: "ancient".magenta(),
+            error: "error".dimmed(),
+            check: "check".cyan(),
+            dim: "dim".dimmed(),
+            icon_ok: "✓".green(),
+            icon_warn: "~".yellow(),
+            icon_bad: "!".red(),
+            icon_err: "?".dimmed(),
+        }
+    }
+
+    pub fn light() -> Self {
+        Theme {
+            fresh: "fresh".green().bold(),
+            aging: "aging".yellow().bold(),
+            stale: "stale".red().bold(),
+            ancient: "ancient".red().bold(),
+            error: "error".black().on_yellow(),
+            check: "check".blue().bold(),
+            dim: "dim".black(),
+            icon_ok: "✓".green().bold(),
+            icon_warn: "~".yellow().bold(),
+            icon_bad: "!".red().bold(),
+            icon_err: "x".yellow().bold(),
+        }
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+#[allow(dead_code)]
+fn get_theme(theme_arg: &ThemeArg) -> Theme {
+    match theme_arg {
+        ThemeArg::Auto => Theme::dark(),
+        ThemeArg::Dark => Theme::dark(),
+        ThemeArg::Light => Theme::light(),
+    }
+}
 
 fn status_color(r: &DepResult) -> ColoredString {
     match &r.status {
@@ -216,6 +297,8 @@ fn print_row(r: &DepResult) {
         Registry::PyPI => "pypi".dimmed(),
         Registry::Go => "go".dimmed(),
         Registry::Docker => "docker".dimmed(),
+        Registry::Ruby => "ruby".dimmed(),
+        Registry::Composer => "packagist".dimmed(),
     };
 
     println!(
@@ -288,7 +371,7 @@ fn print_json(summary: &dep_age::DepAgeSummary) {
                 "publishedAt": r.published_at.map(|d| d.to_rfc3339()),
                 "daysSincePublish": r.days_since_publish,
                 "status": r.status.as_str(),
-                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker" },
+                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker", Registry::Ruby => "ruby", Registry::Composer => "packagist" },
             })
         })
         .collect();
@@ -322,8 +405,9 @@ fn print_csv(summary: &dep_age::DepAgeSummary) {
             Registry::PyPI => "pypi",
             Registry::Go => "go",
             Registry::Docker => "docker",
+            Registry::Ruby => "ruby",
+            Registry::Composer => "packagist",
         };
-        // Quote fields that might contain commas (unlikely but safe)
         println!(
             "{},{},{},{},{},{},{}",
             r.name,
@@ -334,6 +418,143 @@ fn print_csv(summary: &dep_age::DepAgeSummary) {
             r.status.as_str(),
             registry
         );
+    }
+}
+
+fn print_html(summary: &dep_age::DepAgeSummary) {
+    println!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>dep-age report</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #1e1e1e; color: #e0e0e0; }}
+        h1 {{ color: #58a6ff; }}
+        table {{ border-collapse: collapse; width: 100%; max-width: 1000px; }}
+        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #333; }}
+        th {{ background: #2d2d2d; color: #fff; }}
+        .fresh {{ color: #3fb950; }}
+        .aging {{ color: #d29922; }}
+        .stale {{ color: #f85149; }}
+        .ancient {{ color: #a371f7; }}
+        .error {{ color: #8b949e; }}
+        .summary {{ margin: 20px 0; padding: 20px; background: #2d2d2d; border-radius: 8px; }}
+        .summary-item {{ display: inline-block; margin: 10px 20px 10px 0; }}
+        .summary-label {{ color: #8b949e; }}
+        .summary-value {{ font-size: 24px; font-weight: bold; margin-left: 8px; }}
+    </style>
+</head>
+<body>
+    <h1>dep-age report</h1>
+    <div class="summary">
+        <div class="summary-item"><span class="summary-label">Total:</span><span class="summary-value">{}</span></div>
+        <div class="summary-item"><span class="summary-label fresh">Fresh:</span><span class="summary-value fresh">{}</span></div>
+        <div class="summary-item"><span class="summary-label aging">Aging:</span><span class="summary-value aging">{}</span></div>
+        <div class="summary-item"><span class="summary-label stale">Stale:</span><span class="summary-value stale">{}</span></div>
+        <div class="summary-item"><span class="summary-label ancient">Ancient:</span><span class="summary-value ancient">{}</span></div>
+        <div class="summary-item"><span class="summary-label error">Errors:</span><span class="summary-value error">{}</span></div>
+    </div>
+    <table>
+        <thead>
+            <tr><th>Package</th><th>Version</th><th>Latest</th><th>Age</th><th>Status</th><th>Registry</th></tr>
+        </thead>
+        <tbody>"#,
+        summary.total, summary.fresh, summary.aging, summary.stale, summary.ancient, summary.errors
+    );
+
+    for r in &summary.results {
+        let status_class = match r.status {
+            Status::Fresh => "fresh",
+            Status::Aging => "aging",
+            Status::Stale => "stale",
+            Status::Ancient => "ancient",
+            Status::Error(_) => "error",
+        };
+        let status_text = r.status.as_str();
+        let age = r
+            .days_since_publish
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let registry = match r.registry {
+            Registry::Crates => "crates",
+            Registry::Npm => "npm",
+            Registry::PyPI => "pypi",
+            Registry::Go => "go",
+            Registry::Docker => "docker",
+            Registry::Ruby => "ruby",
+            Registry::Composer => "packagist",
+        };
+        println!(
+            r#"            <tr>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{} days</td>
+                <td class="{}">{}</td>
+                <td>{}</td>
+            </tr>"#,
+            r.name, r.version_spec, r.latest_version, age, status_class, status_text, registry
+        );
+    }
+
+    println!(
+        r#"        </tbody>
+    </table>
+</body>
+</html>"#
+    );
+}
+
+fn print_step_summary(summary: &dep_age::DepAgeSummary) {
+    println!("## Dependency Age Report");
+    println!();
+    println!("| Status | Count |");
+    println!("|--------|-------|");
+    if summary.fresh > 0 {
+        println!(
+            "| :white_check_mark: Fresh (<90d) | **{}** |",
+            summary.fresh
+        );
+    }
+    if summary.aging > 0 {
+        println!("| :warning: Aging (90d-1y) | **{}** |", summary.aging);
+    }
+    if summary.stale > 0 {
+        println!("| :x: Stale (1-2y) | **{}** |", summary.stale);
+    }
+    if summary.ancient > 0 {
+        println!("| :no_entry: Ancient (>2y) | **{}** |", summary.ancient);
+    }
+    if summary.errors > 0 {
+        println!("| :question: Errors | **{}** |", summary.errors);
+    }
+    println!();
+    println!("**Total:** {} packages checked", summary.total);
+
+    if summary.stale > 0 || summary.ancient > 0 {
+        println!();
+        println!("### Stale Dependencies");
+        println!();
+        println!("| Package | Version | Age | Published |");
+        println!("|---------|----------|-----|-----------|");
+        for r in &summary.results {
+            if matches!(r.status, Status::Stale | Status::Ancient) {
+                let age = r
+                    .days_since_publish
+                    .map(|d| format!("{}d", d))
+                    .unwrap_or_else(|| "?".to_string());
+                let published = r
+                    .published_at
+                    .map(|d| d.format("%Y-%m-%d").to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                println!(
+                    "| {} | {} | {} | {} |",
+                    r.name, r.version_spec, age, published
+                );
+            }
+        }
     }
 }
 
@@ -464,6 +685,8 @@ enum ManifestKind {
     RequirementsTxt(PathBuf),
     GoMod(PathBuf),
     DockerCompose(PathBuf),
+    RubyGemfile(PathBuf),
+    ComposerJson(PathBuf),
 }
 
 fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
@@ -491,8 +714,14 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
         if name == "docker-compose.yml" || name == "docker-compose.yaml" {
             return Ok(ManifestKind::DockerCompose(p));
         }
+        if name == "gemfile" {
+            return Ok(ManifestKind::RubyGemfile(p));
+        }
+        if name == "composer.json" {
+            return Ok(ManifestKind::ComposerJson(p));
+        }
         return Err(format!(
-            "Unrecognised file: {}. Pass Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, or docker-compose.yml.",
+            "Unrecognised file: {}. Pass Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, docker-compose.yml, Gemfile, or composer.json.",
             p.display()
         ));
     }
@@ -505,6 +734,8 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
     let go_mod = PathBuf::from("go.mod");
     let docker_compose = PathBuf::from("docker-compose.yml");
     let docker_compose_yaml = PathBuf::from("docker-compose.yaml");
+    let gemfile = PathBuf::from("Gemfile");
+    let composer = PathBuf::from("composer.json");
 
     if cargo.exists() {
         return Ok(ManifestKind::Cargo(cargo));
@@ -527,8 +758,14 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
     if docker_compose_yaml.exists() {
         return Ok(ManifestKind::DockerCompose(docker_compose_yaml));
     }
+    if gemfile.exists() {
+        return Ok(ManifestKind::RubyGemfile(gemfile));
+    }
+    if composer.exists() {
+        return Ok(ManifestKind::ComposerJson(composer));
+    }
 
-    Err("No Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, or docker-compose.yml found in the current directory.".to_string())
+    Err("No Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, docker-compose.yml, Gemfile, or composer.json found in the current directory.".to_string())
 }
 
 /// Load ignored packages from `.dep-age-ignore` in the same directory as the manifest.
@@ -648,6 +885,8 @@ async fn main() {
             ManifestKind::RequirementsTxt(p) => get_requirements_dep_count(p),
             ManifestKind::GoMod(_) => 0,
             ManifestKind::DockerCompose(_) => 0,
+            ManifestKind::RubyGemfile(_) => 0,
+            ManifestKind::ComposerJson(_) => 0,
         },
         Err(_) => 0,
     };
@@ -669,6 +908,10 @@ async fn main() {
         None
     };
 
+    // TUI mode - show results in terminal UI after collection
+    #[allow(unused_variables)]
+    let use_tui = false; // TUI mode disabled for now
+
     let on_progress = progress.as_ref().map(|pb| {
         let pb = pb.clone();
         std::sync::Arc::new(move |_| pb.inc(1)) as std::sync::Arc<dyn Fn(usize) + Send + Sync>
@@ -689,7 +932,9 @@ async fn main() {
         | ManifestKind::Pyproject(p)
         | ManifestKind::RequirementsTxt(p)
         | ManifestKind::GoMod(p)
-        | ManifestKind::DockerCompose(p) => p.parent().unwrap_or(std::path::Path::new(".")),
+        | ManifestKind::DockerCompose(p)
+        | ManifestKind::RubyGemfile(p)
+        | ManifestKind::ComposerJson(p) => p.parent().unwrap_or(std::path::Path::new(".")),
     };
     let file_ignores = load_ignore_file(manifest_dir);
     let mut all_ignores = file_ignores;
@@ -717,12 +962,18 @@ async fn main() {
             None
         },
         on_progress,
+        timeout_secs: 30,
+        max_retries: 3,
     };
 
     let is_machine = cli.json
         || matches!(
             cli.format,
-            OutputFormat::Json | OutputFormat::Csv | OutputFormat::Ndjson
+            OutputFormat::Json
+                | OutputFormat::Csv
+                | OutputFormat::Ndjson
+                | OutputFormat::Html
+                | OutputFormat::StepSummary
         );
 
     if !is_machine {
@@ -733,6 +984,8 @@ async fn main() {
             ManifestKind::RequirementsTxt(p) => (p.display().to_string(), "PyPI"),
             ManifestKind::GoMod(p) => (p.display().to_string(), "go"),
             ManifestKind::DockerCompose(p) => (p.display().to_string(), "docker"),
+            ManifestKind::RubyGemfile(p) => (p.display().to_string(), "rubygems"),
+            ManifestKind::ComposerJson(p) => (p.display().to_string(), "packagist"),
         };
         println!();
         println!(
@@ -751,7 +1004,9 @@ async fn main() {
         | ManifestKind::Pyproject(p)
         | ManifestKind::RequirementsTxt(p)
         | ManifestKind::GoMod(p)
-        | ManifestKind::DockerCompose(p) => p.clone(),
+        | ManifestKind::DockerCompose(p)
+        | ManifestKind::RubyGemfile(p)
+        | ManifestKind::ComposerJson(p) => p.clone(),
     };
 
     let summary = match manifest {
@@ -761,6 +1016,8 @@ async fn main() {
         ManifestKind::RequirementsTxt(p) => dep_age::check_requirements_txt(p, &opts).await,
         ManifestKind::GoMod(p) => dep_age::check_go_mod(p, &opts).await,
         ManifestKind::DockerCompose(p) => dep_age::check_docker_compose(p, &opts).await,
+        ManifestKind::RubyGemfile(p) => dep_age::check_ruby_gemfile(p, &opts).await,
+        ManifestKind::ComposerJson(p) => dep_age::check_composer_json(p, &opts).await,
     };
 
     let summary = match summary {
@@ -830,10 +1087,22 @@ async fn main() {
                 "publishedAt": r.published_at.map(|d| d.to_rfc3339()),
                 "daysSincePublish": r.days_since_publish,
                 "status": r.status.as_str(),
-                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker" },
+                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker", Registry::Ruby => "ruby", Registry::Composer => "packagist" },
             });
             println!("{}", json);
         }
+        return;
+    }
+
+    // HTML output
+    if matches!(cli.format, OutputFormat::Html) {
+        print_html(&summary);
+        return;
+    }
+
+    // GitHub Actions step summary (markdown for `::group::`)
+    if matches!(cli.format, OutputFormat::StepSummary) {
+        print_step_summary(&summary);
         return;
     }
 

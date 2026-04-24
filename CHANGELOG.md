@@ -5,26 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.3] - 2026-04-16
+## [0.1.3] - 2026-04-24
 
 ### Added
+- **Ruby Gem Support**:
+  - Auto-detects `Gemfile`
+  - Checks gem versions via RubyGems.org API
+  - Library functions: `check_ruby_gemfile()`, `fetch_ruby()`
+- **PHP Composer Support**:
+  - Auto-detects `composer.json` 
+  - Checks package versions via Packagist.org API
+  - Library functions: `check_composer_json()`, `fetch_composer()`
 - **Go Modules Support**:
-  - `--format ndjson` - Newline-delimited JSON for streaming-friendly output
   - Auto-detects `go.mod` files
   - Checks package versions via Go proxy (proxy.golang.org)
-  - Library functions: `check_go_mod()`, `check_go_module()`
 - **Docker/OCI Image Support**:
   - Auto-detects `docker-compose.yml` and `docker-compose.yaml`
   - Checks image tags via Docker Hub API
-  - Library functions: `check_docker_compose()`, `check_docker_image()`
-- **Registry Updates**:
-  - HTTP client now has timeout and retry support
-  - New registry types: `Registry::Go`, `Registry::Docker`
+- **Output Formats**:
+  - `--format html` - HTML report with dark theme styling
+  - `--format step-summary` - GitHub Actions markdown table
+  - `--format ndjson` - Newline-delimited JSON for streaming
+- **Theme Support**:
+  - `--theme auto|dark|light` - Terminal output theming
+- **Registry Enhancements**:
+  - Timeout configurable in CheckOptions
+  - Rate limit retry with exponential backoff
 
 ### Changed
-- Updated description to include go.mod and docker-compose.yml
-- Improved error handling for network requests with timeouts
-- Registry enum now supports Go and Docker registries
+- Updated description to include all supported manifest types
+- Registry enum now supports: Crates, Npm, PyPI, Go, Docker, Ruby, Composer
+- All output formats updated for new registries
+- Improved error handling for network requests
 
 ## [0.1.2] - 2026-04-15
 

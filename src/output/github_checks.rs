@@ -70,6 +70,8 @@ fn format_error_message(r: &DepResult, error: &str) -> String {
             Registry::PyPI => "PyPI",
             Registry::Go => "go",
             Registry::Docker => "docker",
+            Registry::Ruby => "rubygems",
+            Registry::Composer => "packagist",
         },
         error
     )
@@ -86,6 +88,8 @@ fn registry_url(r: &DepResult) -> String {
         Registry::PyPI => format!("https://pypi.org/project/{}", r.name),
         Registry::Go => format!("https://pkg.go.dev/{}", r.name),
         Registry::Docker => format!("https://hub.docker.com/r/{}", r.name),
+        Registry::Ruby => format!("https://rubygems.org/gems/{}", r.name),
+        Registry::Composer => format!("https://packagist.org/packages/{}", r.name),
     }
 }
 

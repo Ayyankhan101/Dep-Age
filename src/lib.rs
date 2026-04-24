@@ -64,6 +64,15 @@ pub enum DepAgeError {
     FileNotFound(String),
 }
 
+// ── Helper: build HTTP client with timeout ───────────────────────────────────
+
+fn build_client(timeout_secs: u64) -> Result<Client, reqwest::Error> {
+    Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+}
+
 // ── Caching infrastructure ───────────────────────────────────────────────────
 
 /// Cache entry with TTL (time-to-live)
@@ -321,7 +330,23 @@ pub enum Registry {
     Npm,
     PyPI,
     Go,
+    Ruby,
+    Composer,
     Docker,
+}
+
+impl Registry {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Registry::Crates => "crates",
+            Registry::Npm => "npm",
+            Registry::PyPI => "pypi",
+            Registry::Go => "go",
+            Registry::Ruby => "ruby",
+            Registry::Composer => "packagist",
+            Registry::Docker => "docker",
+        }
+    }
 }
 
 /// Aggregated summary of all dependencies checked.
@@ -369,6 +394,10 @@ pub struct CheckOptions {
     pub registry_cache: Option<RegistryCache>,
     /// Optional progress callback called after each package is fetched.
     pub on_progress: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    /// Request timeout in seconds (default: 30).
+    pub timeout_secs: u64,
+    /// Number of retries on rate limit (default: 3).
+    pub max_retries: u32,
 }
 
 impl Default for CheckOptions {
@@ -385,6 +414,8 @@ impl Default for CheckOptions {
             pypi_base_url: None,
             registry_cache: None,
             on_progress: None,
+            timeout_secs: 30,
+            max_retries: 3,
         }
     }
 }
@@ -403,6 +434,8 @@ impl Clone for CheckOptions {
             pypi_base_url: self.pypi_base_url.clone(),
             registry_cache: self.registry_cache.clone(),
             on_progress: self.on_progress.clone(),
+            timeout_secs: self.timeout_secs,
+            max_retries: self.max_retries,
         }
     }
 }
@@ -496,6 +529,20 @@ struct GoVersionInfo {
 struct GoApiResponse {
     Version: String,
     Time: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code, non_snake_case)]
+struct RubyApiResponse {
+    version: String,
+    published_at: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code, non_snake_case)]
+struct ComposerApiResponse {
+    version: String,
+    time: String,
 }
 
 #[derive(Deserialize)]
@@ -636,19 +683,73 @@ async fn fetch_crate(client: &Client, name: &str, version: &str, opts: &CheckOpt
         }
     }
 
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<CratesApiResponse>().await {
-                Ok(data) => {
-                    // Cache the response
-                    if let Some(cache) = &opts.registry_cache {
-                        if let Ok(json) = serde_json::to_vec(&data) {
-                            cache.set(&url, json);
+    // Retry loop with exponential backoff for rate limiting
+    let mut retries = 0;
+    loop {
+        let result = client.get(&url).send().await;
+
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<CratesApiResponse>().await {
+                    Ok(data) => {
+                        // Cache the response
+                        if let Some(cache) = &opts.registry_cache {
+                            if let Ok(json) = serde_json::to_vec(&data) {
+                                cache.set(&url, json);
+                            }
                         }
+                        return build_crate_result(name, version, data, opts);
                     }
-                    build_crate_result(name, version, data, opts)
+                    Err(e) => {
+                        return DepResult {
+                            name: name.to_string(),
+                            version_spec: version.to_string(),
+                            latest_version: "unknown".to_string(),
+                            published_at: None,
+                            days_since_publish: None,
+                            status: Status::Error(e.to_string()),
+                            registry: Registry::Crates,
+                        };
+                    }
                 }
-                Err(e) => DepResult {
+            }
+            Ok(resp) if resp.status().as_u16() == 429 => {
+                // Rate limited - retry with backoff
+                if retries < opts.max_retries {
+                    retries += 1;
+                    let delay = 2u64.pow(retries);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    continue;
+                }
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error("Rate limited (429) after retries".to_string()),
+                    registry: Registry::Crates,
+                };
+            }
+            Ok(resp) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(format!("Registry returned {}", resp.status())),
+                    registry: Registry::Crates,
+                };
+            }
+            Err(e) if e.is_timeout() && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(e) => {
+                return DepResult {
                     name: name.to_string(),
                     version_spec: version.to_string(),
                     latest_version: "unknown".to_string(),
@@ -656,27 +757,9 @@ async fn fetch_crate(client: &Client, name: &str, version: &str, opts: &CheckOpt
                     days_since_publish: None,
                     status: Status::Error(e.to_string()),
                     registry: Registry::Crates,
-                },
+                };
             }
         }
-        Ok(resp) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(format!("Registry returned {}", resp.status())),
-            registry: Registry::Crates,
-        },
-        Err(e) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(e.to_string()),
-            registry: Registry::Crates,
-        },
     }
 }
 
@@ -744,19 +827,72 @@ async fn fetch_npm(client: &Client, name: &str, version: &str, opts: &CheckOptio
         }
     }
 
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<NpmApiResponse>().await {
-                Ok(data) => {
-                    // Cache the response
-                    if let Some(cache) = &opts.registry_cache {
-                        if let Ok(json) = serde_json::to_vec(&data) {
-                            cache.set(&url, json);
+    // Retry loop with exponential backoff for rate limiting
+    let mut retries = 0;
+    loop {
+        let result = client.get(&url).send().await;
+
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<NpmApiResponse>().await {
+                    Ok(data) => {
+                        // Cache the response
+                        if let Some(cache) = &opts.registry_cache {
+                            if let Ok(json) = serde_json::to_vec(&data) {
+                                cache.set(&url, json);
+                            }
                         }
+                        return build_npm_result(name, version, data, opts);
                     }
-                    build_npm_result(name, version, data, opts)
+                    Err(e) => {
+                        return DepResult {
+                            name: name.to_string(),
+                            version_spec: version.to_string(),
+                            latest_version: "unknown".to_string(),
+                            published_at: None,
+                            days_since_publish: None,
+                            status: Status::Error(e.to_string()),
+                            registry: Registry::Npm,
+                        };
+                    }
                 }
-                Err(e) => DepResult {
+            }
+            Ok(resp) if resp.status().as_u16() == 429 => {
+                if retries < opts.max_retries {
+                    retries += 1;
+                    let delay = 2u64.pow(retries);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    continue;
+                }
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error("Rate limited (429) after retries".to_string()),
+                    registry: Registry::Npm,
+                };
+            }
+            Ok(resp) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(format!("Registry returned {}", resp.status())),
+                    registry: Registry::Npm,
+                };
+            }
+            Err(e) if e.is_timeout() && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(e) => {
+                return DepResult {
                     name: name.to_string(),
                     version_spec: version.to_string(),
                     latest_version: "unknown".to_string(),
@@ -764,27 +900,9 @@ async fn fetch_npm(client: &Client, name: &str, version: &str, opts: &CheckOptio
                     days_since_publish: None,
                     status: Status::Error(e.to_string()),
                     registry: Registry::Npm,
-                },
+                };
             }
         }
-        Ok(resp) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(format!("Registry returned {}", resp.status())),
-            registry: Registry::Npm,
-        },
-        Err(e) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(e.to_string()),
-            registry: Registry::Npm,
-        },
     }
 }
 
@@ -856,19 +974,72 @@ async fn fetch_pypi(client: &Client, name: &str, version: &str, opts: &CheckOpti
         }
     }
 
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<PyPiApiResponse>().await {
-                Ok(data) => {
-                    // Cache the response
-                    if let Some(cache) = &opts.registry_cache {
-                        if let Ok(json) = serde_json::to_vec(&data) {
-                            cache.set(&url, json);
+    // Retry loop with exponential backoff for rate limiting
+    let mut retries = 0;
+    loop {
+        let result = client.get(&url).send().await;
+
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<PyPiApiResponse>().await {
+                    Ok(data) => {
+                        // Cache the response
+                        if let Some(cache) = &opts.registry_cache {
+                            if let Ok(json) = serde_json::to_vec(&data) {
+                                cache.set(&url, json);
+                            }
                         }
+                        return build_pypi_result(name, version, data, opts);
                     }
-                    build_pypi_result(name, version, data, opts)
+                    Err(e) => {
+                        return DepResult {
+                            name: name.to_string(),
+                            version_spec: version.to_string(),
+                            latest_version: "unknown".to_string(),
+                            published_at: None,
+                            days_since_publish: None,
+                            status: Status::Error(e.to_string()),
+                            registry: Registry::PyPI,
+                        };
+                    }
                 }
-                Err(e) => DepResult {
+            }
+            Ok(resp) if resp.status().as_u16() == 429 => {
+                if retries < opts.max_retries {
+                    retries += 1;
+                    let delay = 2u64.pow(retries);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    continue;
+                }
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error("Rate limited (429) after retries".to_string()),
+                    registry: Registry::PyPI,
+                };
+            }
+            Ok(resp) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(format!("Registry returned {}", resp.status())),
+                    registry: Registry::PyPI,
+                };
+            }
+            Err(e) if e.is_timeout() && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(e) => {
+                return DepResult {
                     name: name.to_string(),
                     version_spec: version.to_string(),
                     latest_version: "unknown".to_string(),
@@ -876,27 +1047,9 @@ async fn fetch_pypi(client: &Client, name: &str, version: &str, opts: &CheckOpti
                     days_since_publish: None,
                     status: Status::Error(e.to_string()),
                     registry: Registry::PyPI,
-                },
+                };
             }
         }
-        Ok(resp) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(format!("Registry returned {}", resp.status())),
-            registry: Registry::PyPI,
-        },
-        Err(e) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(e.to_string()),
-            registry: Registry::PyPI,
-        },
     }
 }
 
@@ -995,6 +1148,246 @@ async fn fetch_go_module(
             status: Status::Error(e.to_string()),
             registry: Registry::Go,
         },
+    }
+}
+
+async fn fetch_ruby(client: &Client, name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let url = format!("https://rubygems.org/api/v1/gems/{}.json", name);
+
+    if let Some(cache) = &opts.registry_cache {
+        if let Some(cached_data) = cache.get(&url) {
+            if let Ok(data) = serde_json::from_slice::<RubyApiResponse>(&cached_data) {
+                return build_ruby_result(name, version, data, opts);
+            }
+        }
+    }
+
+    let mut retries = 0;
+    loop {
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.json::<RubyApiResponse>().await {
+                Ok(data) => {
+                    if let Some(cache) = &opts.registry_cache {
+                        if let Ok(json) = serde_json::to_vec(&data) {
+                            cache.set(&url, json);
+                        }
+                    }
+                    return build_ruby_result(name, version, data, opts);
+                }
+                Err(e) => {
+                    return DepResult {
+                        name: name.to_string(),
+                        version_spec: version.to_string(),
+                        latest_version: "unknown".to_string(),
+                        published_at: None,
+                        days_since_publish: None,
+                        status: Status::Error(e.to_string()),
+                        registry: Registry::Ruby,
+                    };
+                }
+            },
+            Ok(resp) if resp.status().as_u16() == 429 => {
+                if retries < opts.max_retries {
+                    retries += 1;
+                    let delay = 2u64.pow(retries);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    continue;
+                }
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error("Rate limited (429) after retries".to_string()),
+                    registry: Registry::Ruby,
+                };
+            }
+            Ok(resp) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(format!("Registry returned {}", resp.status())),
+                    registry: Registry::Ruby,
+                };
+            }
+            Err(e) if e.is_timeout() && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(e) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(e.to_string()),
+                    registry: Registry::Ruby,
+                };
+            }
+        }
+    }
+}
+
+fn build_ruby_result(
+    name: &str,
+    version: &str,
+    data: RubyApiResponse,
+    opts: &CheckOptions,
+) -> DepResult {
+    let published_at = DateTime::parse_from_rfc3339(&data.published_at)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc));
+    let days_since_publish = published_at.map(|dt| {
+        let now = Utc::now();
+        (now - dt).num_days()
+    });
+    let status = classify(days_since_publish.unwrap_or(0), opts);
+
+    DepResult {
+        name: name.to_string(),
+        version_spec: version.to_string(),
+        latest_version: data.version,
+        published_at,
+        days_since_publish,
+        status,
+        registry: Registry::Ruby,
+    }
+}
+
+async fn fetch_composer(
+    client: &Client,
+    name: &str,
+    version: &str,
+    opts: &CheckOptions,
+) -> DepResult {
+    let url = format!("https://repo.packagist.org/package/{}.json", name);
+
+    if let Some(cache) = &opts.registry_cache {
+        if let Some(cached_data) = cache.get(&url) {
+            if let Ok(data) = serde_json::from_slice::<ComposerRepoResponse>(&cached_data) {
+                return build_composer_result(name, version, data, opts);
+            }
+        }
+    }
+
+    let mut retries = 0;
+    loop {
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<ComposerRepoResponse>().await {
+                    Ok(data) => {
+                        if let Some(cache) = &opts.registry_cache {
+                            if let Ok(json) = serde_json::to_vec(&data) {
+                                cache.set(&url, json);
+                            }
+                        }
+                        return build_composer_result(name, version, data, opts);
+                    }
+                    Err(e) => {
+                        return DepResult {
+                            name: name.to_string(),
+                            version_spec: version.to_string(),
+                            latest_version: "unknown".to_string(),
+                            published_at: None,
+                            days_since_publish: None,
+                            status: Status::Error(e.to_string()),
+                            registry: Registry::Composer,
+                        };
+                    }
+                }
+            }
+            Ok(resp) if resp.status().as_u16() == 429 => {
+                if retries < opts.max_retries {
+                    retries += 1;
+                    let delay = 2u64.pow(retries);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    continue;
+                }
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error("Rate limited (429) after retries".to_string()),
+                    registry: Registry::Composer,
+                };
+            }
+            Ok(resp) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(format!("Registry returned {}", resp.status())),
+                    registry: Registry::Composer,
+                };
+            }
+            Err(e) if e.is_timeout() && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(e) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(e.to_string()),
+                    registry: Registry::Composer,
+                };
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code)]
+struct ComposerRepoResponse {
+    package: ComposerPackage,
+}
+
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code)]
+struct ComposerPackage {
+    version: String,
+    time: String,
+}
+
+fn build_composer_result(
+    name: &str,
+    version: &str,
+    data: ComposerRepoResponse,
+    opts: &CheckOptions,
+) -> DepResult {
+    let published_at = DateTime::parse_from_rfc3339(&data.package.time)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc));
+    let days_since_publish = published_at.map(|dt| {
+        let now = Utc::now();
+        (now - dt).num_days()
+    });
+    let status = classify(days_since_publish.unwrap_or(0), opts);
+
+    DepResult {
+        name: name.to_string(),
+        version_spec: version.to_string(),
+        latest_version: data.package.version,
+        published_at,
+        days_since_publish,
+        status,
+        registry: Registry::Composer,
     }
 }
 
@@ -1193,7 +1586,7 @@ pub async fn check_cargo_toml(
         }
     }
 
-    let client = Client::builder().user_agent(USER_AGENT).build()?;
+    let client = build_client(opts.timeout_secs)?;
 
     let entries: Vec<(String, String)> = deps
         .into_iter()
@@ -1263,7 +1656,7 @@ pub async fn check_package_json(
         }
     }
 
-    let client = Client::builder().user_agent(USER_AGENT).build()?;
+    let client = build_client(opts.timeout_secs)?;
 
     let entries: Vec<(String, String)> = deps
         .into_iter()
@@ -1414,7 +1807,7 @@ pub async fn check_pyproject_toml(
         return Ok(build_summary(vec![]));
     }
 
-    let client = Client::builder().user_agent(USER_AGENT).build()?;
+    let client = build_client(opts.timeout_secs)?;
 
     let entries: Vec<(String, String)> = deps
         .into_iter()
@@ -1496,7 +1889,7 @@ pub async fn check_requirements_txt(
         return Ok(build_summary(vec![]));
     }
 
-    let client = Client::builder().user_agent(USER_AGENT).build()?;
+    let client = build_client(opts.timeout_secs)?;
 
     let entries: Vec<(String, String)> = deps
         .into_iter()
@@ -1646,7 +2039,7 @@ pub async fn check_cargo_workspace(
             }
 
             // Fetch all dependencies from registry
-            let client = Client::builder().user_agent(USER_AGENT).build()?;
+            let client = build_client(opts.timeout_secs)?;
 
             let entries: Vec<(String, String)> = all_deps
                 .into_iter()
@@ -1772,7 +2165,7 @@ pub async fn check_go_mod(
         return Ok(build_summary(vec![]));
     }
 
-    let client = Client::builder().user_agent(USER_AGENT).build()?;
+    let client = build_client(opts.timeout_secs)?;
 
     let entries: Vec<(String, String)> = deps
         .into_iter()
@@ -1856,7 +2249,7 @@ pub async fn check_docker_compose(
         return Ok(build_summary(vec![]));
     }
 
-    let client = Client::builder().user_agent(USER_AGENT).build()?;
+    let client = build_client(opts.timeout_secs)?;
 
     let entries: Vec<(String, String)> = deps
         .into_iter()
@@ -1876,6 +2269,178 @@ pub async fn check_docker_compose(
             let on_progress = on_progress.clone();
             async move {
                 let result = fetch_docker_image(&client, &name, &ver, &opts).await;
+                if let Some(cb) = on_progress {
+                    cb(i + 1);
+                }
+                result
+            }
+        })
+        .buffer_unordered(opts.concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+    Ok(build_summary(results))
+}
+
+pub async fn check_ruby_gemfile(
+    path: impl AsRef<Path>,
+    opts: &CheckOptions,
+) -> Result<DepAgeSummary, DepAgeError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Err(DepAgeError::FileNotFound(path.display().to_string()));
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let mut deps: HashMap<String, String> = HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("source") {
+            continue;
+        }
+        if (line.starts_with("gem ") || line.starts_with("  gem ")) && !line.contains("group :") {
+            if let Some(gem_match) = parse_ruby_gem_line(line) {
+                let parts: Vec<&str> = gem_match.splitn(2, ',').collect();
+                let name = parts[0]
+                    .trim()
+                    .trim_matches(|c| c == '\'' || c == '"')
+                    .to_string();
+                let version = parts
+                    .get(1)
+                    .map(|v| v.trim().trim_matches(|c| c == '\'' || c == '"').to_string())
+                    .unwrap_or_else(|| "*".to_string());
+                if !name.is_empty() {
+                    deps.insert(name, version);
+                }
+            }
+        }
+    }
+
+    if deps.is_empty() {
+        return Ok(build_summary(vec![]));
+    }
+
+    let client = build_client(opts.timeout_secs)?;
+
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
+    let on_progress = opts.on_progress.clone();
+    let results = stream::iter(entries)
+        .enumerate()
+        .map(|(i, (name, ver))| {
+            let client = client.clone();
+            let opts = opts.clone();
+            let on_progress = on_progress.clone();
+            async move {
+                let result = fetch_ruby(&client, &name, &ver, &opts).await;
+                if let Some(cb) = on_progress {
+                    cb(i + 1);
+                }
+                result
+            }
+        })
+        .buffer_unordered(opts.concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+    Ok(build_summary(results))
+}
+
+fn parse_ruby_gem_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_start_matches("gem ").trim_start_matches("  gem ");
+    let quote = trimmed.chars().next()?;
+    if quote == '\'' || quote == '"' {
+        let rest = &trimmed[1..];
+        if let Some(end) = rest.find(quote) {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ruby_gem_line() {
+        assert_eq!(
+            parse_ruby_gem_line("gem 'rails', '~> 7.0'"),
+            Some("rails".to_string())
+        );
+        assert_eq!(
+            parse_ruby_gem_line("  gem 'puma'"),
+            Some("puma".to_string())
+        );
+        assert_eq!(
+            parse_ruby_gem_line("gem \"rspec\""),
+            Some("rspec".to_string())
+        );
+    }
+}
+
+pub async fn check_composer_json(
+    path: impl AsRef<Path>,
+    opts: &CheckOptions,
+) -> Result<DepAgeSummary, DepAgeError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Err(DepAgeError::FileNotFound(path.display().to_string()));
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let pkg: serde_json::Value = serde_json::from_str(&content)?;
+
+    let mut deps: HashMap<String, String> = HashMap::new();
+
+    if let Some(d) = pkg.get("require").and_then(|v| v.as_object()) {
+        for (k, v) in d {
+            if k != "php" && !k.starts_with("ext-") {
+                deps.insert(k.clone(), v.as_str().unwrap_or("*").to_string());
+            }
+        }
+    }
+
+    if !opts.include_dev {
+        if let Some(d) = pkg.get("require-dev").and_then(|v| v.as_object()) {
+            for (k, _) in d {
+                deps.remove(k);
+            }
+        }
+    }
+
+    if deps.is_empty() {
+        return Ok(build_summary(vec![]));
+    }
+
+    let client = build_client(opts.timeout_secs)?;
+
+    let entries: Vec<(String, String)> = deps
+        .into_iter()
+        .filter(|(name, _)| {
+            !opts
+                .ignore_list
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(name))
+        })
+        .collect();
+    let on_progress = opts.on_progress.clone();
+    let results = stream::iter(entries)
+        .enumerate()
+        .map(|(i, (name, ver))| {
+            let client = client.clone();
+            let opts = opts.clone();
+            let on_progress = on_progress.clone();
+            async move {
+                let result = fetch_composer(&client, &name, &ver, &opts).await;
                 if let Some(cb) = on_progress {
                     cb(i + 1);
                 }
