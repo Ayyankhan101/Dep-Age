@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-04-24
+
+### Fixed
+- **Custom file path support**: Now accepts any manifest file path (e.g., `my-app.toml`, `/path/to/Cargo.toml`)
+- Content-based detection: parses file content to verify manifest type
+- Suffix matching: accepts files ending with known manifest names
+
+### Changed
+- Updated version to 0.1.4
+
 ## [0.1.3] - 2026-04-24
 
 ### Added

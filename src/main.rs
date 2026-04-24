@@ -728,7 +728,9 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
         if let Ok(content) = std::fs::read_to_string(&p) {
             // Try to detect manifest type by parsing content
             if (content.contains("[dependencies]") || content.contains("[dev-dependencies]"))
-                && (content.contains("[package]") || content.contains("[lib]") || content.contains("name = "))
+                && (content.contains("[package]")
+                    || content.contains("[lib]")
+                    || content.contains("name = "))
             {
                 return Ok(ManifestKind::Cargo(p));
             }
