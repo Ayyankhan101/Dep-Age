@@ -6,7 +6,7 @@
 [![CI](https://github.com/Ayyankhan101/Dep-Age/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayyankhan101/Dep-Age/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> Check how old your dependencies are — for **Cargo.toml**, **package.json**, **pyproject.toml**, **requirements.txt**, **go.mod**, and **docker-compose.yml**.
+> Check how old your dependencies are — for **Cargo.toml**, **package.json**, **pyproject.toml**, **requirements.txt**, **go.mod**, **docker-compose.yml**, **Gemfile**, and **composer.json**.
 
 See at a glance which packages haven't been updated in months or years. Spot stale and abandoned dependencies before they become a security or compatibility problem.
 
@@ -136,7 +136,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dep-age = "0.1.3"
+dep-age = "0.1.4"
 tokio = { version = "1", features = ["full"] }
 ```
 

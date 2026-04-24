@@ -1,6 +1,6 @@
 # dep-age
 
-Check how old your dependencies are — for `Cargo.toml`, `package.json`, `pyproject.toml`, `requirements.txt`, `go.mod`, and `docker-compose.yml`.
+Check how old your dependencies are — for `Cargo.toml`, `package.json`, `pyproject.toml`, `requirements.txt`, `go.mod`, `docker-compose.yml`, `Gemfile`, and `composer.json`.
 
 ## Install
 
