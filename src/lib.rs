@@ -2366,6 +2366,7 @@ fn parse_ruby_gem_line(line: &str) -> Option<String> {
     None
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

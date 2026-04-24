@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Custom file path support**: Now accepts any manifest file path (e.g., `my-app.toml`, `/path/to/Cargo.toml`)
+- **Clippy fix**: Moved code after test module with allow attribute
 - Content-based detection: parses file content to verify manifest type
 - Suffix matching: accepts files ending with known manifest names
 
