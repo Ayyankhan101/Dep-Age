@@ -690,19 +690,22 @@ enum ManifestKind {
 }
 
 fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
-    if let Some(p) = path {
+    // Tier 1: Exact name match (preserves original behavior)
+    if let Some(p) = path.clone() {
         let name = p
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_lowercase();
-        if name == "cargo.toml" {
+
+        // Known manifest types (exact match)
+        if name == "cargo.toml" || name.ends_with("cargo.toml") && name != "lock" {
             return Ok(ManifestKind::Cargo(p));
         }
         if name == "package.json" {
             return Ok(ManifestKind::PackageJson(p));
         }
-        if name == "pyproject.toml" {
+        if name == "pyproject.toml" || name.ends_with("pyproject.toml") {
             return Ok(ManifestKind::Pyproject(p));
         }
         if name == "requirements.txt" || name.ends_with(".requirements.txt") {
@@ -720,13 +723,44 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
         if name == "composer.json" {
             return Ok(ManifestKind::ComposerJson(p));
         }
+
+        // Tier 2: Content-based detection for unknown files
+        if let Ok(content) = std::fs::read_to_string(&p) {
+            // Try to detect manifest type by parsing content
+            if (content.contains("[dependencies]") || content.contains("[dev-dependencies]"))
+                && (content.contains("[package]") || content.contains("[lib]") || content.contains("name = "))
+            {
+                return Ok(ManifestKind::Cargo(p));
+            }
+            if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
+                // It's valid JSON - check if it has dependency fields
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if json.get("dependencies").is_some() || json.get("devDependencies").is_some() {
+                        return Ok(ManifestKind::PackageJson(p));
+                    }
+                    if json.get("require").is_some() {
+                        return Ok(ManifestKind::ComposerJson(p));
+                    }
+                }
+            }
+            if content.starts_with("[[") && content.contains("dependencies") {
+                return Ok(ManifestKind::Pyproject(p));
+            }
+            if content
+                .lines()
+                .any(|l| l.contains("==") || l.contains(">=") || l.contains("<="))
+            {
+                return Ok(ManifestKind::RequirementsTxt(p));
+            }
+        }
+
         return Err(format!(
             "Unrecognised file: {}. Pass Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, docker-compose.yml, Gemfile, or composer.json.",
             p.display()
         ));
     }
 
-    // Auto-detect
+    // Auto-detect (no path provided)
     let cargo = PathBuf::from("Cargo.toml");
     let pkg = PathBuf::from("package.json");
     let pyproject = PathBuf::from("pyproject.toml");

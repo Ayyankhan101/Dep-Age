@@ -1,0 +1,12 @@
+{
+  "manifest_path": "",
+  "checked_at": "2026-04-24T05:50:02.830704106Z",
+  "results": [
+    {
+      "name": "reqwest",
+      "version_spec": "0.12",
+      "status": "fresh",
+      "days_since_publish": 76
+    }
+  ]
+}
