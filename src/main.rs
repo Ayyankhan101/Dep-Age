@@ -89,6 +89,9 @@ struct Cli {
     /// Output theme: auto (default), dark, light
     #[arg(long, default_value = "auto")]
     theme: ThemeArg,
+    /// Write output to file instead of stdout
+    #[arg(long)]
+    output: Option<PathBuf>,
     // TODO: Interactive TUI mode with live updates
     // #[arg(long, default_value_t = false)]
     // tui: bool,
@@ -355,74 +358,9 @@ fn sort_key(s: &Status) -> u8 {
     }
 }
 
-// ── JSON output ─────────────────────────────────────────────────────────────
-
-fn print_json(summary: &dep_age::DepAgeSummary) {
-    // Hand-roll compact JSON to avoid adding serde-json feature flags
-    // (serde_json is already a dep via lib.rs, so this is fine)
-    let results: Vec<serde_json::Value> = summary
-        .results
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "version": r.version_spec,
-                "latestVersion": r.latest_version,
-                "publishedAt": r.published_at.map(|d| d.to_rfc3339()),
-                "daysSincePublish": r.days_since_publish,
-                "status": r.status.as_str(),
-                "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker", Registry::Ruby => "ruby", Registry::Composer => "packagist" },
-            })
-        })
-        .collect();
-
-    let output = serde_json::json!({
-        "total": summary.total,
-        "fresh": summary.fresh,
-        "aging": summary.aging,
-        "stale": summary.stale,
-        "ancient": summary.ancient,
-        "errors": summary.errors,
-        "checkedAt": summary.checked_at.to_rfc3339(),
-        "oldestPackage": summary.oldest.as_ref().map(|r| r.name.clone()),
-        "results": results,
-    });
-
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
-}
-
-fn print_csv(summary: &dep_age::DepAgeSummary) {
-    println!("name,version,latest,published_at,days_since_publish,status,registry");
-    for r in &summary.results {
-        let published = r.published_at.map(|d| d.to_rfc3339()).unwrap_or_default();
-        let days = r
-            .days_since_publish
-            .map(|d| d.to_string())
-            .unwrap_or_default();
-        let registry = match r.registry {
-            Registry::Crates => "crates",
-            Registry::Npm => "npm",
-            Registry::PyPI => "pypi",
-            Registry::Go => "go",
-            Registry::Docker => "docker",
-            Registry::Ruby => "ruby",
-            Registry::Composer => "packagist",
-        };
-        println!(
-            "{},{},{},{},{},{},{}",
-            r.name,
-            r.version_spec,
-            r.latest_version,
-            published,
-            days,
-            r.status.as_str(),
-            registry
-        );
-    }
-}
-
-fn print_html(summary: &dep_age::DepAgeSummary) {
-    println!(
+fn render_html(summary: &dep_age::DepAgeSummary) -> String {
+    let mut buf = String::new();
+    buf.push_str(&format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -462,7 +400,7 @@ fn print_html(summary: &dep_age::DepAgeSummary) {
         </thead>
         <tbody>"#,
         summary.total, summary.fresh, summary.aging, summary.stale, summary.ancient, summary.errors
-    );
+    ));
 
     for r in &summary.results {
         let status_class = match r.status {
@@ -486,7 +424,7 @@ fn print_html(summary: &dep_age::DepAgeSummary) {
             Registry::Ruby => "ruby",
             Registry::Composer => "packagist",
         };
-        println!(
+        buf.push_str(&format!(
             r#"            <tr>
                 <td>{}</td>
                 <td>{}</td>
@@ -496,49 +434,56 @@ fn print_html(summary: &dep_age::DepAgeSummary) {
                 <td>{}</td>
             </tr>"#,
             r.name, r.version_spec, r.latest_version, age, status_class, status_text, registry
-        );
+        ));
     }
 
-    println!(
+    buf.push_str(
         r#"        </tbody>
     </table>
 </body>
-</html>"#
+</html>"#,
     );
+    buf
 }
 
-fn print_step_summary(summary: &dep_age::DepAgeSummary) {
-    println!("## Dependency Age Report");
-    println!();
-    println!("| Status | Count |");
-    println!("|--------|-------|");
+fn render_step_summary(summary: &dep_age::DepAgeSummary) -> String {
+    let mut buf = String::new();
+    buf.push_str("## Dependency Age Report\n\n");
+    buf.push_str("| Status | Count |\n");
+    buf.push_str("|--------|-------|\n");
     if summary.fresh > 0 {
-        println!(
-            "| :white_check_mark: Fresh (<90d) | **{}** |",
+        buf.push_str(&format!(
+            "| :white_check_mark: Fresh (<90d) | **{}** |\n",
             summary.fresh
-        );
+        ));
     }
     if summary.aging > 0 {
-        println!("| :warning: Aging (90d-1y) | **{}** |", summary.aging);
+        buf.push_str(&format!(
+            "| :warning: Aging (90d-1y) | **{}** |\n",
+            summary.aging
+        ));
     }
     if summary.stale > 0 {
-        println!("| :x: Stale (1-2y) | **{}** |", summary.stale);
+        buf.push_str(&format!("| :x: Stale (1-2y) | **{}** |\n", summary.stale));
     }
     if summary.ancient > 0 {
-        println!("| :no_entry: Ancient (>2y) | **{}** |", summary.ancient);
+        buf.push_str(&format!(
+            "| :no_entry: Ancient (>2y) | **{}** |\n",
+            summary.ancient
+        ));
     }
     if summary.errors > 0 {
-        println!("| :question: Errors | **{}** |", summary.errors);
+        buf.push_str(&format!("| :question: Errors | **{}** |\n", summary.errors));
     }
-    println!();
-    println!("**Total:** {} packages checked", summary.total);
+    buf.push_str(&format!(
+        "\n**Total:** {} packages checked\n",
+        summary.total
+    ));
 
     if summary.stale > 0 || summary.ancient > 0 {
-        println!();
-        println!("### Stale Dependencies");
-        println!();
-        println!("| Package | Version | Age | Published |");
-        println!("|---------|----------|-----|-----------|");
+        buf.push_str("\n### Stale Dependencies\n\n");
+        buf.push_str("| Package | Version | Age | Published |\n");
+        buf.push_str("|---------|----------|-----|-----------|\n");
         for r in &summary.results {
             if matches!(r.status, Status::Stale | Status::Ancient) {
                 let age = r
@@ -549,16 +494,34 @@ fn print_step_summary(summary: &dep_age::DepAgeSummary) {
                     .published_at
                     .map(|d| d.format("%Y-%m-%d").to_string())
                     .unwrap_or_else(|| "?".to_string());
-                println!(
-                    "| {} | {} | {} | {} |",
+                buf.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
                     r.name, r.version_spec, age, published
-                );
+                ));
             }
         }
     }
+    buf
 }
 
 // ── Helper functions to count dependencies ───────────────────────────────────
+
+fn write_output(output: &str, dest: &Option<PathBuf>) {
+    match dest {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, output) {
+                eprintln!(
+                    "{} Failed to write to {}: {}",
+                    "error:".red().bold(),
+                    path.display(),
+                    e
+                );
+                std::process::exit(1);
+            }
+        }
+        None => print!("{}", output),
+    }
+}
 
 fn get_cargo_dep_count(path: &PathBuf) -> usize {
     let content = match std::fs::read_to_string(path) {
@@ -944,10 +907,6 @@ async fn main() {
         None
     };
 
-    // TUI mode - show results in terminal UI after collection
-    #[allow(unused_variables)]
-    let use_tui = false; // TUI mode disabled for now
-
     let on_progress = progress.as_ref().map(|pb| {
         let pb = pb.clone();
         std::sync::Arc::new(move |_| pb.inc(1)) as std::sync::Arc<dyn Fn(usize) + Send + Sync>
@@ -1065,7 +1024,35 @@ async fn main() {
     };
 
     if cli.json || matches!(cli.format, OutputFormat::Json) {
-        print_json(&summary);
+        let json_str = serde_json::to_string_pretty(&{
+            let results: Vec<serde_json::Value> = summary
+                .results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.name,
+                        "version": r.version_spec,
+                        "latestVersion": r.latest_version,
+                        "publishedAt": r.published_at.map(|d| d.to_rfc3339()),
+                        "daysSincePublish": r.days_since_publish,
+                        "status": r.status.as_str(),
+                        "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker", Registry::Ruby => "ruby", Registry::Composer => "packagist" },
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "total": summary.total,
+                "fresh": summary.fresh,
+                "aging": summary.aging,
+                "stale": summary.stale,
+                "ancient": summary.ancient,
+                "errors": summary.errors,
+                "checkedAt": summary.checked_at.to_rfc3339(),
+                "oldestPackage": summary.oldest.as_ref().map(|r| r.name.clone()),
+                "results": results,
+            })
+        }).unwrap();
+        write_output(&json_str, &cli.output);
         if let Some(pb) = &progress {
             pb.finish_and_clear();
         }
@@ -1079,20 +1066,48 @@ async fn main() {
 
     // CSV output — header + rows, no decoration
     if matches!(cli.format, OutputFormat::Csv) {
-        print_csv(&summary);
+        let mut buf = String::new();
+        buf.push_str("name,version,latest,published_at,days_since_publish,status,registry\n");
+        for r in &summary.results {
+            let published = r.published_at.map(|d| d.to_rfc3339()).unwrap_or_default();
+            let days = r
+                .days_since_publish
+                .map(|d| d.to_string())
+                .unwrap_or_default();
+            let registry = match r.registry {
+                Registry::Crates => "crates",
+                Registry::Npm => "npm",
+                Registry::PyPI => "pypi",
+                Registry::Go => "go",
+                Registry::Docker => "docker",
+                Registry::Ruby => "ruby",
+                Registry::Composer => "packagist",
+            };
+            buf.push_str(&format!(
+                "{},{},{},{},{},{},{}\n",
+                r.name,
+                r.version_spec,
+                r.latest_version,
+                published,
+                days,
+                r.status.as_str(),
+                registry
+            ));
+        }
+        write_output(&buf, &cli.output);
         return;
     }
 
     // GitHub Actions annotations
     if matches!(cli.format, OutputFormat::GithubChecks) {
-        print!("{}", format_github_checks(&summary));
+        write_output(&format_github_checks(&summary), &cli.output);
         return;
     }
 
     // JUnit XML output
     if matches!(cli.format, OutputFormat::Junit) {
         match format_junit(&summary) {
-            Ok(output) => println!("{}", output),
+            Ok(output) => write_output(&output, &cli.output),
             Err(e) => {
                 eprintln!("{} {}", "error:".red().bold(), e);
                 std::process::exit(1);
@@ -1104,7 +1119,7 @@ async fn main() {
     // SARIF output
     if matches!(cli.format, OutputFormat::Sarif) {
         match format_sarif(&summary) {
-            Ok(output) => println!("{}", output),
+            Ok(output) => write_output(&output, &cli.output),
             Err(e) => {
                 eprintln!("{} {}", "error:".red().bold(), e);
                 std::process::exit(1);
@@ -1115,6 +1130,7 @@ async fn main() {
 
     // NDJSON output - newline-delimited JSON for streaming
     if matches!(cli.format, OutputFormat::Ndjson) {
+        let mut buf = String::new();
         for r in &summary.results {
             let json = serde_json::json!({
                 "name": r.name,
@@ -1125,20 +1141,23 @@ async fn main() {
                 "status": r.status.as_str(),
                 "registry": match r.registry { Registry::Crates => "crates", Registry::Npm => "npm", Registry::PyPI => "pypi", Registry::Go => "go", Registry::Docker => "docker", Registry::Ruby => "ruby", Registry::Composer => "packagist" },
             });
-            println!("{}", json);
+            buf.push_str(&format!("{}\n", json));
         }
+        write_output(&buf, &cli.output);
         return;
     }
 
     // HTML output
     if matches!(cli.format, OutputFormat::Html) {
-        print_html(&summary);
+        let html = render_html(&summary);
+        write_output(&html, &cli.output);
         return;
     }
 
     // GitHub Actions step summary (markdown for `::group::`)
     if matches!(cli.format, OutputFormat::StepSummary) {
-        print_step_summary(&summary);
+        let md = render_step_summary(&summary);
+        write_output(&md, &cli.output);
         return;
     }
 

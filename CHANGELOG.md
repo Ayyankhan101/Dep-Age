@@ -16,6 +16,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Updated version to 0.1.4
 
+## [Unreleased]
+
+### Fixed
+- Duplicate `starts_with('#')` check in `check_cargo_toml` (lib.rs)
+- Unused `ProgressFn` type removed
+- `expect()` calls in `check_crate`, `check_npm_package`, `check_docker_image`, `check_go_module` replaced with proper error handling
+- Dead TUI code (`use_tui` variable) removed from main.rs
+
+### Added
+- `Serialize` derives on `Status`, `Registry`, `DepResult` for structured output
+- `--output <file>` flag to write output to a file instead of stdout
+- `render_html` and `render_step_summary` now return `String` instead of printing
+- Proper Go.mod block `require ( ... )` parsing with state tracking
+- Docker Compose YAML-first parsing with line-based fallback
+- `serde_yaml` dependency for proper YAML parsing
+- `DepAgeError::Yaml` error variant
+- 13 new tests: output formatters (7), Go.mod parsing (3), Docker Compose (3)
+- `# Errors` documentation on public check functions
+
+### Changed
+- `format_years` and `registry_url` helpers shared from `src/output/mod.rs`
+- `quick-xml` bumped from 0.37 to 0.40
+- 63 dependencies updated via `cargo update`
+- `#[allow(clippy::items_after_test_module)]` removed
+- Go.mod block require parsing uses proper state machine
+- Docker Compose parsing filters out registry URLs with ports
+
 ## [0.1.3] - 2026-04-24
 
 ### Added

@@ -251,6 +251,36 @@ async fn main() {
 }
 ```
 
+### Check a `Gemfile`
+
+```rust
+use dep_age::{check_ruby_gemfile, CheckOptions};
+
+#[tokio::main]
+async fn main() {
+    let opts = CheckOptions::default();
+
+    let summary = check_ruby_gemfile("Gemfile", &opts).await.unwrap();
+    println!("Total gems: {}", summary.total);
+    println!("Stale: {}", summary.stale);
+}
+```
+
+### Check a `composer.json`
+
+```rust
+use dep_age::{check_composer_json, CheckOptions};
+
+#[tokio::main]
+async fn main() {
+    let opts = CheckOptions::default();
+
+    let summary = check_composer_json("composer.json", &opts).await.unwrap();
+    println!("Total packages: {}", summary.total);
+    println!("Ancient: {}", summary.ancient);
+}
+```
+
 ### `CheckOptions`
 
 | Field              | Type                  | Default | Description                            |
@@ -265,7 +295,9 @@ async fn main() {
 | `npm_base_url`     | `Option<String>`      | `None`  | Override npm registry URL              |
 | `pypi_base_url`    | `Option<String>`      | `None`  | Override PyPI API URL                 |
 | `registry_cache`   | `Option<RegistryCache>` | `None` | Use cached registry responses        |
-| `on_progress`      | `Arc<dyn Fn(DepResult)>` | `None` | Callback per-package results          |
+| `on_progress`      | `Option<Arc<dyn Fn(usize) + Send + Sync>>` | `None` | Progress callback (index) |
+| `timeout_secs`     | `u64`                 | `30`    | Request timeout in seconds             |
+| `max_retries`      | `u32`                 | `3`     | Retries on rate limit                  |
 
 ### `DepResult`
 

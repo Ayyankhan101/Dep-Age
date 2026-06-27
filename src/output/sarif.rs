@@ -1,6 +1,7 @@
 //! SARIF (Static Analysis Results Interchange Format) output formatter
 //! Used by GitHub Advanced Security
 
+use super::{format_years, registry_url};
 use crate::{DepAgeSummary, DepResult, Registry, Status};
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
@@ -123,23 +124,6 @@ fn format_error_message(r: &DepResult, error: &str) -> String {
         },
         error
     )
-}
-
-fn format_years(days: i64) -> String {
-    let years = days as f64 / 365.0;
-    format!("{:.1}", years)
-}
-
-fn registry_url(r: &DepResult) -> String {
-    match r.registry {
-        Registry::Crates => format!("https://crates.io/crates/{}", r.name),
-        Registry::Npm => format!("https://www.npmjs.com/package/{}", r.name),
-        Registry::PyPI => format!("https://pypi.org/project/{}", r.name),
-        Registry::Go => format!("https://pkg.go.dev/{}", r.name),
-        Registry::Docker => format!("https://hub.docker.com/r/{}", r.name),
-        Registry::Ruby => format!("https://rubygems.org/gems/{}", r.name),
-        Registry::Composer => format!("https://packagist.org/packages/{}", r.name),
-    }
 }
 
 #[cfg(test)]

@@ -57,6 +57,9 @@ pub enum DepAgeError {
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("YAML parse error: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
@@ -285,7 +288,7 @@ pub struct CacheStats {
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// The status of a single dependency based on how old it is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
     /// Published less than 90 days ago (configurable).
     Fresh,
@@ -312,7 +315,7 @@ impl Status {
 }
 
 /// Result for a single dependency.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DepResult {
     pub name: String,
     pub version_spec: String,
@@ -324,7 +327,7 @@ pub struct DepResult {
 }
 
 /// Which package registry was queried.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Registry {
     Crates,
     Npm,
@@ -602,9 +605,6 @@ struct CargoManifest {
 struct CargoWorkspace {
     members: Option<Vec<String>>,
 }
-
-/// Progress callback type
-pub type ProgressFn = Box<dyn Fn(usize, usize) + Send + Sync>;
 
 // ── Core logic ────────────────────────────────────────────────────────────────
 
@@ -1547,6 +1547,12 @@ fn build_summary(results: Vec<DepResult>) -> DepAgeSummary {
 
 /// Check all dependencies listed in a `Cargo.toml` file.
 ///
+/// # Errors
+///
+/// Returns [`DepAgeError::FileNotFound`] if the path does not exist,
+/// [`DepAgeError::TomlParse`] if the file is not valid TOML,
+/// or [`DepAgeError::Network`] / [`DepAgeError::RateLimited`] on registry failures.
+///
 /// # Example
 /// ```rust,no_run
 /// # use dep_age::{check_cargo_toml, CheckOptions};
@@ -1621,6 +1627,12 @@ pub async fn check_cargo_toml(
 
 /// Check all dependencies listed in a `package.json` file.
 ///
+/// # Errors
+///
+/// Returns [`DepAgeError::FileNotFound`] if the path does not exist,
+/// [`DepAgeError::JsonParse`] if the file is not valid JSON,
+/// or [`DepAgeError::Network`] / [`DepAgeError::RateLimited`] on registry failures.
+///
 /// # Example
 /// ```rust,no_run
 /// # use dep_age::{check_package_json, CheckOptions};
@@ -1691,19 +1703,39 @@ pub async fn check_package_json(
 
 /// Check a single crate by name.
 pub async fn check_crate(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("failed to build HTTP client");
+    let client = match build_client(opts.timeout_secs) {
+        Ok(c) => c,
+        Err(e) => {
+            return DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Crates,
+            };
+        }
+    };
     fetch_crate(&client, name, version, opts).await
 }
 
 /// Check a single npm package by name.
 pub async fn check_npm_package(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("failed to build HTTP client");
+    let client = match build_client(opts.timeout_secs) {
+        Ok(c) => c,
+        Err(e) => {
+            return DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Npm,
+            };
+        }
+    };
     fetch_npm(&client, name, version, opts).await
 }
 
@@ -1872,11 +1904,7 @@ pub async fn check_requirements_txt(
     for line in content.lines() {
         let line = line.trim();
         // Skip empty lines, comments, options, and -r includes
-        if line.is_empty()
-            || line.starts_with('#')
-            || line.starts_with('-')
-            || line.starts_with('#')
-        {
+        if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
             continue;
         }
         let (name, ver) = parse_python_dep(line);
@@ -2109,14 +2137,32 @@ fn extract_deps_from_manifest(
 
 /// Check a single Go module by name.
 pub async fn check_go_module(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("failed to build HTTP client");
+    let client = match build_client(opts.timeout_secs) {
+        Ok(c) => c,
+        Err(e) => {
+            return DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Go,
+            };
+        }
+    };
     fetch_go_module(&client, name, version, opts).await
 }
 
 /// Check all dependencies listed in a `go.mod` file.
+///
+/// Supports both single-line `require` and block `require ( ... )` syntax.
+/// Skips images with registry URLs (containing `.` or `localhost`).
+///
+/// # Errors
+///
+/// Returns [`DepAgeError::FileNotFound`] if the path does not exist,
+/// or [`DepAgeError::Network`] / [`DepAgeError::RateLimited`] on registry failures.
 ///
 /// # Example
 /// ```rust,no_run
@@ -2138,26 +2184,47 @@ pub async fn check_go_mod(
     let content = std::fs::read_to_string(path)?;
     let mut deps: HashMap<String, String> = HashMap::new();
 
+    let mut in_require_block = false;
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty()
-            || line.starts_with("//")
-            || line.starts_with("module ")
-            || line.starts_with("go ")
-        {
+        if line.is_empty() || line.starts_with("//") {
             continue;
         }
-        if line.starts_with("require (") {
+        if line.starts_with("module ") || line.starts_with("go ") {
             continue;
         }
-        if line == ")" {
+        // Handle block require syntax: require ( ... )
+        if line == "require (" {
+            in_require_block = true;
             continue;
         }
+        if in_require_block {
+            if line == ")" {
+                in_require_block = false;
+                continue;
+            }
+            // Inside block: "github.com/foo/bar v1.0.0 // indirect"
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let name = parts[0].to_string();
+                let version = parts[1].to_string();
+                deps.insert(name, version);
+            }
+            continue;
+        }
+        // Single-line require: require github.com/foo/bar v1.0.0
+        if line.starts_with("require ") {
+            let rest = line.trim_start_matches("require ");
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() >= 2 {
+                deps.insert(parts[0].to_string(), parts[1].to_string());
+            }
+            continue;
+        }
+        // Bare dependency line (e.g., in go.sum-style or legacy)
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let name = parts[0].to_string();
-            let version = parts[1].to_string();
-            deps.insert(name, version);
+        if parts.len() >= 2 && parts[0].contains('/') {
+            deps.insert(parts[0].to_string(), parts[1].to_string());
         }
     }
 
@@ -2200,14 +2267,33 @@ pub async fn check_go_mod(
 
 /// Check a single Docker image by name.
 pub async fn check_docker_image(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("failed to build HTTP client");
+    let client = match build_client(opts.timeout_secs) {
+        Ok(c) => c,
+        Err(e) => {
+            return DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Docker,
+            };
+        }
+    };
     fetch_docker_image(&client, name, version, opts).await
 }
 
 /// Check Docker images listed in a Docker Compose file.
+///
+/// Parses the YAML structure to find `services.*.image` entries.
+/// Falls back to line-based parsing if YAML parse fails.
+/// Skips images with registry URLs (containing `.` or `localhost`).
+///
+/// # Errors
+///
+/// Returns [`DepAgeError::FileNotFound`] if the path does not exist,
+/// or [`DepAgeError::Network`] / [`DepAgeError::RateLimited`] on registry failures.
 ///
 /// # Example
 /// ```rust,no_run
@@ -2229,18 +2315,44 @@ pub async fn check_docker_compose(
     let content = std::fs::read_to_string(path)?;
     let mut deps: HashMap<String, String> = HashMap::new();
 
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+    // Try YAML parsing first
+    if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+        if let Some(services) = doc.get("services").and_then(|s| s.as_mapping()) {
+            for (_service_name, service_val) in services {
+                if let Some(image) = service_val.get("image").and_then(|i| i.as_str()) {
+                    if !image.is_empty() && !image.contains("://") && !image.contains("localhost") {
+                        let parts: Vec<&str> = image.splitn(2, ':').collect();
+                        let name = parts[0].to_string();
+                        // Skip names with dots or colons (registry URLs with ports)
+                        if name.contains('.') || name.contains(':') {
+                            continue;
+                        }
+                        let version = parts.get(1).unwrap_or(&"latest").to_string();
+                        deps.insert(name, version);
+                    }
+                }
+            }
         }
-        if line.starts_with("image:") {
-            let image = line.trim_start_matches("image:").trim();
-            if !image.is_empty() {
-                let parts: Vec<&str> = image.splitn(2, ':').collect();
-                let name = parts[0].to_string();
-                let version = parts.get(1).unwrap_or(&"latest").to_string();
-                deps.insert(name, version);
+    }
+
+    // Fallback: line-based parsing
+    if deps.is_empty() {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with("image:") {
+                let image = line.trim_start_matches("image:").trim();
+                if !image.is_empty() && !image.contains("://") && !image.contains("localhost") {
+                    let parts: Vec<&str> = image.splitn(2, ':').collect();
+                    let name = parts[0].to_string();
+                    if name.contains('.') || name.contains(':') {
+                        continue;
+                    }
+                    let version = parts.get(1).unwrap_or(&"latest").to_string();
+                    deps.insert(name, version);
+                }
             }
         }
     }
@@ -2366,7 +2478,6 @@ fn parse_ruby_gem_line(line: &str) -> Option<String> {
     None
 }
 
-#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

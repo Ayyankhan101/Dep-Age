@@ -1,6 +1,6 @@
 [package]
 name = "dep-age"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Ayyan <ayyan@example.com>"]
 description = "Check how old your dependencies are — for Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, docker-compose.yml, Gemfile, and composer.json"
@@ -44,7 +44,9 @@ indicatif = "0.18"
 dirs = "5"
 sha2 = "0.10"
 # XML generation for JUnit/SARIF
-quick-xml = "0.37"
+quick-xml = "0.40"
+# YAML parsing for docker-compose
+serde_yaml = "0.9"
 
 [dev-dependencies]
 tokio-test = "0.4"
