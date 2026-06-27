@@ -2478,26 +2478,6 @@ fn parse_ruby_gem_line(line: &str) -> Option<String> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_ruby_gem_line() {
-        assert_eq!(
-            parse_ruby_gem_line("gem 'rails', '~> 7.0'"),
-            Some("rails".to_string())
-        );
-        assert_eq!(
-            parse_ruby_gem_line("  gem 'puma'"),
-            Some("puma".to_string())
-        );
-        assert_eq!(
-            parse_ruby_gem_line("gem \"rspec\""),
-            Some("rspec".to_string())
-        );
-    }
-}
 
 pub async fn check_composer_json(
     path: impl AsRef<Path>,
@@ -2564,4 +2544,24 @@ pub async fn check_composer_json(
         .await;
 
     Ok(build_summary(results))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ruby_gem_line() {
+        assert_eq!(
+            parse_ruby_gem_line("gem 'rails', '~> 7.0'"),
+            Some("rails".to_string())
+        );
+        assert_eq!(
+            parse_ruby_gem_line("  gem 'puma'"),
+            Some("puma".to_string())
+        );
+        assert_eq!(
+            parse_ruby_gem_line("gem \"rspec\""),
+            Some("rspec".to_string())
+        );
+    }
 }
