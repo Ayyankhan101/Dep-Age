@@ -2478,7 +2478,6 @@ fn parse_ruby_gem_line(line: &str) -> Option<String> {
     None
 }
 
-
 pub async fn check_composer_json(
     path: impl AsRef<Path>,
     opts: &CheckOptions,
