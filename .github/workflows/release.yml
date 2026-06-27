@@ -325,6 +325,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: ''
 
+      - name: Sync README to npm package
+        run: cp README.md npm/README.md
+
       - name: Verify npm package structure
         working-directory: ./npm
         run: |
