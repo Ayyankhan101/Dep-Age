@@ -136,7 +136,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dep-age = "0.1.4"
+dep-age = "0.1.6"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -309,7 +309,7 @@ pub struct DepResult {
     pub published_at: Option<DateTime<Utc>>,
     pub days_since_publish: Option<i64>,
     pub status: Status,     // Fresh | Aging | Stale | Ancient | Error(String)
-    pub registry: Registry, // Crates | Npm | Pypi
+    pub registry: Registry, // Crates | Npm | PyPI | Go | Docker | Ruby | Composer
 }
 ```
 

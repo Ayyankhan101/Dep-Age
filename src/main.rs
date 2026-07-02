@@ -34,7 +34,7 @@ struct Cli {
     #[arg(long, value_enum)]
     filter: Option<FilterArg>,
 
-    /// Output format: pretty (default), json, csv
+    /// Output format: pretty (default), json, csv, ndjson, github-checks, junit, sarif, html, step-summary
     #[arg(long, default_value = "pretty")]
     format: OutputFormat,
 
@@ -166,60 +166,6 @@ enum FailOnArg {
 
 // ── Display helpers ─────────────────────────────────────────────────────────
 
-pub struct Theme {
-    pub fresh: ColoredString,
-    pub aging: ColoredString,
-    pub stale: ColoredString,
-    pub ancient: ColoredString,
-    pub error: ColoredString,
-    pub check: ColoredString,
-    pub dim: ColoredString,
-    pub icon_ok: ColoredString,
-    pub icon_warn: ColoredString,
-    pub icon_bad: ColoredString,
-    pub icon_err: ColoredString,
-}
-
-impl Theme {
-    pub fn dark() -> Self {
-        Theme {
-            fresh: "fresh".green(),
-            aging: "aging".yellow(),
-            stale: "stale".red(),
-            ancient: "ancient".magenta(),
-            error: "error".dimmed(),
-            check: "check".cyan(),
-            dim: "dim".dimmed(),
-            icon_ok: "✓".green(),
-            icon_warn: "~".yellow(),
-            icon_bad: "!".red(),
-            icon_err: "?".dimmed(),
-        }
-    }
-
-    pub fn light() -> Self {
-        Theme {
-            fresh: "fresh".green().bold(),
-            aging: "aging".yellow().bold(),
-            stale: "stale".red().bold(),
-            ancient: "ancient".red().bold(),
-            error: "error".black().on_yellow(),
-            check: "check".blue().bold(),
-            dim: "dim".black(),
-            icon_ok: "✓".green().bold(),
-            icon_warn: "~".yellow().bold(),
-            icon_bad: "!".red().bold(),
-            icon_err: "x".yellow().bold(),
-        }
-    }
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self::dark()
-    }
-}
-
 fn status_color(r: &DepResult) -> ColoredString {
     match &r.status {
         Status::Fresh => "fresh".green(),
@@ -338,6 +284,14 @@ fn sort_key(s: &Status) -> u8 {
     }
 }
 
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 fn render_html(summary: &dep_age::DepAgeSummary) -> String {
     let mut buf = String::new();
     buf.push_str(&format!(
@@ -413,7 +367,13 @@ fn render_html(summary: &dep_age::DepAgeSummary) -> String {
                 <td class="{}">{}</td>
                 <td>{}</td>
             </tr>"#,
-            r.name, r.version_spec, r.latest_version, age, status_class, status_text, registry
+            escape_html(&r.name),
+            escape_html(&r.version_spec),
+            escape_html(&r.latest_version),
+            age,
+            status_class,
+            status_text,
+            registry
         ));
     }
 
@@ -856,18 +816,23 @@ async fn main() {
         return;
     }
 
-    let total_deps = match detect_manifest(cli.file.clone()) {
-        Ok(m) => match &m {
-            ManifestKind::Cargo(p) => get_cargo_dep_count(p),
-            ManifestKind::PackageJson(p) => get_package_json_dep_count(p),
-            ManifestKind::Pyproject(p) => get_pyproject_dep_count(p),
-            ManifestKind::RequirementsTxt(p) => get_requirements_dep_count(p),
-            ManifestKind::GoMod(_) => 0,
-            ManifestKind::DockerCompose(_) => 0,
-            ManifestKind::RubyGemfile(_) => 0,
-            ManifestKind::ComposerJson(_) => 0,
-        },
-        Err(_) => 0,
+    let manifest = match detect_manifest(cli.file.clone()) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+
+    let total_deps = match &manifest {
+        ManifestKind::Cargo(p) => get_cargo_dep_count(p),
+        ManifestKind::PackageJson(p) => get_package_json_dep_count(p),
+        ManifestKind::Pyproject(p) => get_pyproject_dep_count(p),
+        ManifestKind::RequirementsTxt(p) => get_requirements_dep_count(p),
+        ManifestKind::GoMod(_) => 0,
+        ManifestKind::DockerCompose(_) => 0,
+        ManifestKind::RubyGemfile(_) => 0,
+        ManifestKind::ComposerJson(_) => 0,
     };
 
     let progress = if !cli.json
@@ -891,14 +856,6 @@ async fn main() {
         let pb = pb.clone();
         std::sync::Arc::new(move |_| pb.inc(1)) as std::sync::Arc<dyn Fn(usize) + Send + Sync>
     });
-
-    let manifest = match detect_manifest(cli.file.clone()) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red().bold(), e);
-            std::process::exit(1);
-        }
-    };
 
     // Load .dep-age-ignore from manifest directory + merge with CLI --ignore
     let manifest_dir = match &manifest {

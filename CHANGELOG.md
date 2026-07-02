@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-07-02
+
+### Fixed
+- **Ruby classify bug**: Unknown `published_at` now returns `Status::Error` instead of falsely classifying as `Fresh`
+- **Composer classify bug**: Same fix — unknown publish time is an error, not fresh
+- **HTML XSS**: Package names/versions are now escaped before insertion into HTML reports
+- **detect_manifest double call**: Merged into single call to avoid redundant filesystem reads
+- **README**: Updated `check_pypi_package` reference (now exists), version to 0.1.6, Registry doc to list all 7 types
+- **Duplicate tests**: Removed duplicate Python extras tests from lib.rs (kept in python_tests.rs)
+
+### Added
+- **`check_pypi_package`**: Single-package convenience function for PyPI (matches `check_crate`/`check_npm_package` pattern)
+- **`check_ruby_package`**: Single-package convenience function for RubyGems
+- **`check_composer_package`**: Single-package convenience function for Packagist
+- **`DepAgeSummary` Serialize/Deserialize**: Full summary is now serializable for library consumers
+- **npm checksum verification**: `install.js` downloads `sha256sums.txt` and verifies SHA256 before extraction
+- **npm version check in CI**: Release workflow verifies `npm/package.json` version matches tag
+- **`--format` help text**: Now lists all 9 output formats
+
+### Removed
+- Dead `Theme` struct, `Theme::dark()`, `Theme::light()`, `Default for Theme` (was unused after `--theme` removal in v0.1.6)
+
+### Changed
+- Version bump to 0.1.7
+
 ## [0.1.6] - 2026-07-02
 
 ### Fixed

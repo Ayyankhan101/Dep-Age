@@ -75,6 +75,33 @@ async function main() {
     fs.mkdirSync(BIN_DIR, { recursive: true });
     await download(downloadUrl, archivePath);
 
+    // Verify checksum
+    const checksumsUrl = `https://github.com/${REPO}/releases/download/v${VERSION}/sha256sums.txt`;
+    const checksumsPath = path.join(tmpDir, `sha256sums-${VERSION}.txt`);
+    try {
+      await download(checksumsUrl, checksumsPath);
+      const checksums = fs.readFileSync(checksumsPath, "utf8");
+      const expectedHash = checksums
+        .split("\n")
+        .find((line) => line.includes(assetName))
+        ?.split(/\s+/)[0];
+      if (expectedHash) {
+        const crypto = require("crypto");
+        const fileBuffer = fs.readFileSync(archivePath);
+        const actualHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+        if (actualHash !== expectedHash) {
+          throw new Error(
+            `Checksum mismatch: expected ${expectedHash}, got ${actualHash}`
+          );
+        }
+        console.log(`dep-age: Checksum verified`);
+      }
+    } catch (e) {
+      if (e.message && e.message.includes("Checksum mismatch")) throw e;
+      // Checksum file not available — warn but continue
+      console.warn(`dep-age: Could not verify checksum (continuing anyway)`);
+    }
+
     if (assetName.endsWith(".tar.gz")) {
       const tar = require("child_process").execFileSync;
       // Extract tar.gz into bin/

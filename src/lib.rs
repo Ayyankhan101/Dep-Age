@@ -353,7 +353,7 @@ impl Registry {
 }
 
 /// Aggregated summary of all dependencies checked.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DepAgeSummary {
     pub results: Vec<DepResult>,
     pub total: usize,
@@ -1211,7 +1211,10 @@ fn build_ruby_result(
         let now = Utc::now();
         (now - dt).num_days()
     });
-    let status = classify(days_since_publish.unwrap_or(0), opts);
+    let status = match days_since_publish {
+        Some(days) => classify(days, opts),
+        None => Status::Error("No publish time found".to_string()),
+    };
 
     DepResult {
         name: name.to_string(),
@@ -1359,7 +1362,10 @@ fn build_composer_result(
         let now = Utc::now();
         (now - dt).num_days()
     });
-    let status = classify(days_since_publish.unwrap_or(0), opts);
+    let status = match days_since_publish {
+        Some(days) => classify(days, opts),
+        None => Status::Error("No publish time found".to_string()),
+    };
 
     DepResult {
         name: name.to_string(),
@@ -1735,6 +1741,63 @@ pub async fn check_npm_package(name: &str, version: &str, opts: &CheckOptions) -
         }
     };
     fetch_npm(&client, name, version, opts).await
+}
+
+/// Check a single PyPI package by name.
+pub async fn check_pypi_package(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let client = match build_client(opts.timeout_secs) {
+        Ok(c) => c,
+        Err(e) => {
+            return DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::PyPI,
+            };
+        }
+    };
+    fetch_pypi(&client, name, version, opts).await
+}
+
+/// Check a single Ruby gem by name.
+pub async fn check_ruby_package(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let client = match build_client(opts.timeout_secs) {
+        Ok(c) => c,
+        Err(e) => {
+            return DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Ruby,
+            };
+        }
+    };
+    fetch_ruby(&client, name, version, opts).await
+}
+
+/// Check a single Composer package by name.
+pub async fn check_composer_package(name: &str, version: &str, opts: &CheckOptions) -> DepResult {
+    let client = match build_client(opts.timeout_secs) {
+        Ok(c) => c,
+        Err(e) => {
+            return DepResult {
+                name: name.to_string(),
+                version_spec: version.to_string(),
+                latest_version: "unknown".to_string(),
+                published_at: None,
+                days_since_publish: None,
+                status: Status::Error(e.to_string()),
+                registry: Registry::Composer,
+            };
+        }
+    };
+    fetch_composer(&client, name, version, opts).await
 }
 
 /// Check all dependencies listed in a `pyproject.toml` file.
@@ -2582,27 +2645,6 @@ mod tests {
             parse_ruby_gem_line("    gem 'devise'"),
             Some("devise".to_string())
         );
-    }
-
-    #[test]
-    fn test_parse_python_dep_extras() {
-        let (name, ver) = parse_python_dep("requests[security]>=2.28.0");
-        assert_eq!(name, "requests");
-        assert_eq!(ver, ">=2.28.0");
-    }
-
-    #[test]
-    fn test_parse_python_dep_extras_no_version() {
-        let (name, ver) = parse_python_dep("requests[security]");
-        assert_eq!(name, "requests");
-        assert_eq!(ver, "*");
-    }
-
-    #[test]
-    fn test_parse_python_dep_extras_complex() {
-        let (name, ver) = parse_python_dep("django[argon2]==4.2.0");
-        assert_eq!(name, "django");
-        assert_eq!(ver, "==4.2.0");
     }
 
     #[test]

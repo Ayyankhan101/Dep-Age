@@ -55,6 +55,16 @@ jobs:
           fi
           echo "✓ Cargo.toml version matches tag"
 
+      # Verify npm/package.json version matches tag
+      - name: Verify npm/package.json version matches tag
+        run: |
+          NPM_VERSION=$(grep '"version"' npm/package.json | head -1 | sed 's/.*"version": "//;s/".*//')
+          if [ "$NPM_VERSION" != "${{ steps.extract.outputs.version }}" ]; then
+            echo "::error::npm/package.json version ($NPM_VERSION) != tag version (${{ steps.extract.outputs.version }})"
+            exit 1
+          fi
+          echo "✓ npm/package.json version matches tag"
+
       # Verify CHANGELOG entry exists
       - name: Verify CHANGELOG entry
         run: |
