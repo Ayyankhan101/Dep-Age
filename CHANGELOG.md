@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-07-02
+
+### Fixed
+- **Go `.info` endpoint**: Fixed JSON deserialization (`resp.text()` → `resp.json()`) so Go module age is calculated correctly
+- **Composer response**: Fixed `ComposerRepoResponse` struct to match actual Packagist API shape
+- **`--fail-on any`**: Now includes `summary.errors` in the exit-code check
+- **Config thresholds**: CLI `--fresh/--aging/--stale` now merge with config file values as fallback instead of overriding
+- **`long_about`**: Updated to list all 8 manifest types (was missing Go, Docker, Ruby, Composer)
+- **Python extras stripping**: `requests[security]>=2.28.0` now correctly extracts name=`requests`
+- **Ruby gem flexible prefix**: Gems indented with tabs or >2 spaces now detected
+- **`npm/run.js`**: Missing binary now exits with code 1 instead of silently succeeding
+- **`npm/install.js`**: HTTP 4xx/5xx errors now rejected instead of silently written to disk
+- **`npm/install.js`**: Redirects 307/308 now followed (was only 301/302)
+- **`detect_manifest`**: Operator precedence clarified, dead `name != "lock"` check removed
+
+### Added
+- **Retry logic for Go proxy**: `fetch_go_module` now retries on 429/timeout (same pattern as crates.io)
+- **Retry logic for Docker Hub**: `fetch_docker_image` now retries on 429/timeout
+- **`npm/package.json` `files` field**: Whitelists only shipped files (`run.js`, `install.js`, `bin/`)
+- **`npm/package.json` `engines.node`**: Bumped from >=14 to >=18
+- **Tests**: Python extras stripping (3 tests), Ruby flexible indentation (2 tests), classify custom thresholds
+- Removed dead code: `GoVersionInfo`, `GoModFile`, `GoModule`, `GoRequire`, `GoSumEntry`, `ComposerApiResponse`, `DockerHubTokenResponse`, `ThemeArg`, `get_theme`
+- Removed vestigial `#[allow(dead_code)]` from `ComposerRepoResponse`
+
+### Changed
+- tokio features trimmed from `"full"` to `["rt-multi-thread", "macros", "time", "sync"]`
+- Version bump to 0.1.6
+
 ## [0.1.4] - 2026-04-24
 
 ### Fixed

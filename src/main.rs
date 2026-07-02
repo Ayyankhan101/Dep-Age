@@ -15,7 +15,7 @@ use std::path::PathBuf;
 #[command(
     name = "dep-age",
     about = "Check how old your dependencies are",
-    long_about = "Checks crates.io or npm registry to show when each dependency was last published.\nSupports Cargo.toml and package.json.",
+    long_about = "Checks crates.io, npm, PyPI, Go, Docker Hub, RubyGems, or Packagist to show when each dependency was last published.\nSupports Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, docker-compose.yml, Gemfile, and composer.json.",
     version
 )]
 struct Cli {
@@ -46,17 +46,17 @@ struct Cli {
     #[arg(long, default_value_t = 10)]
     concurrency: usize,
 
-    /// Days threshold for "fresh" (default: 90)
-    #[arg(long, default_value_t = 90)]
-    fresh: i64,
+    /// Days threshold for "fresh" (default: 90, or from .dep-age.toml)
+    #[arg(long)]
+    fresh: Option<i64>,
 
-    /// Days threshold for "aging" (default: 365)
-    #[arg(long, default_value_t = 365)]
-    aging: i64,
+    /// Days threshold for "aging" (default: 365, or from .dep-age.toml)
+    #[arg(long)]
+    aging: Option<i64>,
 
-    /// Days threshold for "stale" (default: 730)
-    #[arg(long, default_value_t = 730)]
-    stale: i64,
+    /// Days threshold for "stale" (default: 730, or from .dep-age.toml)
+    #[arg(long)]
+    stale: Option<i64>,
 
     /// Enable registry caching (speeds up repeated runs)
     #[arg(long, default_value_t = false)]
@@ -86,15 +86,9 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     diff: bool,
 
-    /// Output theme: auto (default), dark, light
-    #[arg(long, default_value = "auto")]
-    theme: ThemeArg,
     /// Write output to file instead of stdout
     #[arg(long)]
     output: Option<PathBuf>,
-    // TODO: Interactive TUI mode with live updates
-    // #[arg(long, default_value_t = false)]
-    // tui: bool,
 }
 
 #[derive(Subcommand)]
@@ -123,11 +117,14 @@ enum FilterArg {
     Error,
 }
 
-#[derive(Clone, ValueEnum)]
-enum ThemeArg {
-    Auto,
-    Dark,
-    Light,
+#[derive(Clone, PartialEq, ValueEnum)]
+enum SortArg {
+    /// Sort by age (oldest first, default)
+    Age,
+    /// Sort alphabetically by package name
+    Name,
+    /// Sort by status (ancient first, then stale, aging, fresh)
+    Status,
 }
 
 #[derive(Clone, Default, ValueEnum)]
@@ -165,16 +162,6 @@ enum FailOnArg {
     Any,
     /// Never fail (exit 0 always, unless parse errors)
     Never,
-}
-
-#[derive(Clone, PartialEq, ValueEnum)]
-enum SortArg {
-    /// Sort by age (oldest first, default)
-    Age,
-    /// Sort alphabetically by package name
-    Name,
-    /// Sort by status (ancient first, then stale, aging, fresh)
-    Status,
 }
 
 // ── Display helpers ─────────────────────────────────────────────────────────
@@ -230,15 +217,6 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::dark()
-    }
-}
-
-#[allow(dead_code)]
-fn get_theme(theme_arg: &ThemeArg) -> Theme {
-    match theme_arg {
-        ThemeArg::Auto => Theme::dark(),
-        ThemeArg::Dark => Theme::dark(),
-        ThemeArg::Light => Theme::light(),
     }
 }
 
@@ -343,7 +321,9 @@ fn should_fail(summary: &dep_age::DepAgeSummary, fail_on: &FailOnArg) -> bool {
         FailOnArg::Ancient => summary.ancient > 0,
         FailOnArg::Stale => summary.stale > 0 || summary.ancient > 0,
         FailOnArg::Aging => summary.aging > 0 || summary.stale > 0 || summary.ancient > 0,
-        FailOnArg::Any => summary.aging > 0 || summary.stale > 0 || summary.ancient > 0,
+        FailOnArg::Any => {
+            summary.aging > 0 || summary.stale > 0 || summary.ancient > 0 || summary.errors > 0
+        }
         FailOnArg::Never => false,
     }
 }
@@ -662,7 +642,7 @@ fn detect_manifest(path: Option<PathBuf>) -> Result<ManifestKind, String> {
             .to_lowercase();
 
         // Known manifest types (exact match)
-        if name == "cargo.toml" || name.ends_with("cargo.toml") && name != "lock" {
+        if name == "cargo.toml" || name.ends_with("cargo.toml") {
             return Ok(ManifestKind::Cargo(p));
         }
         if name == "package.json" {
@@ -938,9 +918,15 @@ async fn main() {
     let opts = CheckOptions {
         include_dev: !cli.no_dev && !config.as_ref().map(|c| c.get_no_dev()).unwrap_or(false),
         concurrency: cli.concurrency,
-        threshold_fresh: cli.fresh,
-        threshold_aging: cli.aging,
-        threshold_stale: cli.stale,
+        threshold_fresh: cli
+            .fresh
+            .unwrap_or(config.as_ref().map(|c| c.get_fresh()).unwrap_or(90)),
+        threshold_aging: cli
+            .aging
+            .unwrap_or(config.as_ref().map(|c| c.get_aging()).unwrap_or(365)),
+        threshold_stale: cli
+            .stale
+            .unwrap_or(config.as_ref().map(|c| c.get_stale()).unwrap_or(730)),
         ignore_list: all_ignores,
         crates_base_url: config
             .as_ref()

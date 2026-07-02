@@ -1,6 +1,6 @@
 [package]
 name = "dep-age"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 authors = ["Ayyan <ayyan@example.com>"]
 description = "Check how old your dependencies are — for Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, docker-compose.yml, Gemfile, and composer.json"
@@ -20,7 +20,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # JSON parsing

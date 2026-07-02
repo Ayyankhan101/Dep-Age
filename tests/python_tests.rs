@@ -227,3 +227,24 @@ async fn test_requirements_txt_file_not_found() {
     let result = check_requirements_txt("/nonexistent/requirements.txt", &opts).await;
     assert!(result.is_err());
 }
+
+#[test]
+fn test_parse_python_dep_extras() {
+    let (name, ver) = dep_age::parse_python_dep_test("requests[security]>=2.28.0");
+    assert_eq!(name, "requests");
+    assert_eq!(ver, ">=2.28.0");
+}
+
+#[test]
+fn test_parse_python_dep_extras_no_version() {
+    let (name, ver) = dep_age::parse_python_dep_test("requests[security]");
+    assert_eq!(name, "requests");
+    assert_eq!(ver, "*");
+}
+
+#[test]
+fn test_parse_python_dep_extras_complex() {
+    let (name, ver) = dep_age::parse_python_dep_test("django[argon2]==4.2.0");
+    assert_eq!(name, "django");
+    assert_eq!(ver, "==4.2.0");
+}

@@ -32,19 +32,19 @@ function getAssetName() {
 
 function download(url, dest) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
     https
       .get(url, { headers: { "User-Agent": "dep-age-npm-installer" } }, (res) => {
-        if (res.statusCode === 302 || res.statusCode === 301) {
-          // Follow redirect
-          https.get(res.headers.location, { headers: { "User-Agent": "dep-age-npm-installer" } }, (res2) => {
-            res2.pipe(file);
-            file.on("finish", () => { file.close(); resolve(); });
-          }).on("error", reject);
+        if ([301, 302, 307, 308].includes(res.statusCode)) {
+          download(res.headers.location, dest).then(resolve, reject);
           return;
         }
+        if (res.statusCode >= 400) {
+          reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+          return;
+        }
+        const file = fs.createWriteStream(dest);
         res.pipe(file);
-        file.on("finish", () => { file.close(); resolve(); });
+        file.on("finish", () => { file.close(resolve); });
       })
       .on("error", reject);
   });

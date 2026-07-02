@@ -521,71 +521,17 @@ struct PyPiApiResponse {
 // ── Go Module API response types ─────────────────────────────────────────────────
 
 #[derive(Deserialize, Serialize)]
-#[allow(dead_code, non_snake_case)]
-struct GoVersionInfo {
-    Version: String,
-    Time: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[allow(dead_code, non_snake_case)]
+#[allow(non_snake_case)]
 struct GoApiResponse {
     Version: String,
     Time: String,
 }
 
 #[derive(Deserialize, Serialize)]
-#[allow(dead_code, non_snake_case)]
+#[allow(non_snake_case)]
 struct RubyApiResponse {
     version: String,
     published_at: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[allow(dead_code, non_snake_case)]
-struct ComposerApiResponse {
-    version: String,
-    time: String,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct GoModFile {
-    #[serde(rename = "Module")]
-    module: Option<GoModule>,
-    #[serde(rename = "Require")]
-    require: Option<Vec<GoRequire>>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct GoModule {
-    #[serde(rename = "Path")]
-    path: String,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct GoRequire {
-    #[serde(rename = "Path")]
-    path: String,
-    #[serde(rename = "Version")]
-    version: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct GoSumEntry {
-    #[serde(rename = "Path")]
-    path: String,
-    #[serde(rename = "Version")]
-    version: String,
-    #[serde(rename = "Info")]
-    info: Option<String>,
-    #[serde(rename = "Zip")]
-    zip: Option<String>,
-    #[serde(rename = "Sum")]
-    sum: Option<String>,
 }
 
 // ── TOML manifest types ───────────────────────────────────────────────────────
@@ -1106,48 +1052,65 @@ async fn fetch_go_module(
         }
     }
 
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.text().await {
-            Ok(text) => {
-                let data = GoApiResponse {
-                    Version: clean_ver.to_string(),
-                    Time: text,
-                };
-                if let Some(cache) = &opts.registry_cache {
-                    if let Ok(json) = serde_json::to_vec(&data) {
-                        cache.set(&url, json);
+    let mut retries = 0;
+    loop {
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.json::<GoApiResponse>().await {
+                Ok(data) => {
+                    if let Some(cache) = &opts.registry_cache {
+                        if let Ok(json) = serde_json::to_vec(&data) {
+                            cache.set(&url, json);
+                        }
                     }
+                    return build_go_result(name, version, data, opts);
                 }
-                build_go_result(name, version, data, opts)
-            }
-            Err(e) => DepResult {
-                name: name.to_string(),
-                version_spec: version.to_string(),
-                latest_version: "unknown".to_string(),
-                published_at: None,
-                days_since_publish: None,
-                status: Status::Error(e.to_string()),
-                registry: Registry::Go,
+                Err(e) => {
+                    return DepResult {
+                        name: name.to_string(),
+                        version_spec: version.to_string(),
+                        latest_version: "unknown".to_string(),
+                        published_at: None,
+                        days_since_publish: None,
+                        status: Status::Error(e.to_string()),
+                        registry: Registry::Go,
+                    };
+                }
             },
-        },
-        Ok(resp) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(format!("Registry returned {}", resp.status())),
-            registry: Registry::Go,
-        },
-        Err(e) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(e.to_string()),
-            registry: Registry::Go,
-        },
+            Ok(resp) if resp.status().as_u16() == 429 && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Ok(resp) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(format!("Registry returned {}", resp.status())),
+                    registry: Registry::Go,
+                };
+            }
+            Err(e) if e.is_timeout() && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(e) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(e.to_string()),
+                    registry: Registry::Go,
+                };
+            }
+        }
     }
 }
 
@@ -1353,16 +1316,8 @@ async fn fetch_composer(
 }
 
 #[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
 struct ComposerRepoResponse {
-    package: ComposerPackage,
-}
-
-#[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
-struct ComposerPackage {
-    version: String,
-    time: String,
+    packages: Option<serde_json::Value>,
 }
 
 fn build_composer_result(
@@ -1371,7 +1326,33 @@ fn build_composer_result(
     data: ComposerRepoResponse,
     opts: &CheckOptions,
 ) -> DepResult {
-    let published_at = DateTime::parse_from_rfc3339(&data.package.time)
+    // Packagist returns {"packages":{"vendor/name":[{"version":"1.0","time":"..."}]}}
+    // Find the first version entry for this package
+    let (ver, time_str) = if let Some(packages) = &data.packages {
+        if let Some(versions) = packages.get(name).and_then(|v| v.as_array()) {
+            if let Some(first) = versions.first() {
+                let ver = first
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let time = first
+                    .get("time")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                (ver, time)
+            } else {
+                ("unknown".to_string(), String::new())
+            }
+        } else {
+            ("unknown".to_string(), String::new())
+        }
+    } else {
+        ("unknown".to_string(), String::new())
+    };
+
+    let published_at = DateTime::parse_from_rfc3339(&time_str)
         .ok()
         .map(|dt| dt.with_timezone(&Utc));
     let days_since_publish = published_at.map(|dt| {
@@ -1383,7 +1364,7 @@ fn build_composer_result(
     DepResult {
         name: name.to_string(),
         version_spec: version.to_string(),
-        latest_version: data.package.version,
+        latest_version: ver,
         published_at,
         days_since_publish,
         status,
@@ -1403,12 +1384,6 @@ struct DockerHubResponse {
 struct DockerTag {
     name: String,
     last_updated: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
-struct DockerHubTokenResponse {
-    token: String,
 }
 
 fn build_docker_result(
@@ -1471,49 +1446,72 @@ async fn fetch_docker_image(
         }
     }
 
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.json::<DockerHubResponse>().await {
-            Ok(data) => {
-                if let Some(cache) = &opts.registry_cache {
-                    if let Ok(json) = serde_json::to_vec(&data) {
-                        cache.set(&url, json);
+    let mut retries = 0;
+    loop {
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<DockerHubResponse>().await {
+                    Ok(data) => {
+                        if let Some(cache) = &opts.registry_cache {
+                            if let Ok(json) = serde_json::to_vec(&data) {
+                                cache.set(&url, json);
+                            }
+                        }
+                        let last_updated = data
+                            .tags
+                            .iter()
+                            .find(|t| t.name == tag)
+                            .and_then(|t| t.last_updated.clone());
+                        return build_docker_result(name, version, last_updated, opts);
+                    }
+                    Err(e) => {
+                        return DepResult {
+                            name: name.to_string(),
+                            version_spec: version.to_string(),
+                            latest_version: "unknown".to_string(),
+                            published_at: None,
+                            days_since_publish: None,
+                            status: Status::Error(e.to_string()),
+                            registry: Registry::Docker,
+                        };
                     }
                 }
-                let last_updated = data
-                    .tags
-                    .iter()
-                    .find(|t| t.name == tag)
-                    .and_then(|t| t.last_updated.clone());
-                build_docker_result(name, version, last_updated, opts)
             }
-            Err(e) => DepResult {
-                name: name.to_string(),
-                version_spec: version.to_string(),
-                latest_version: "unknown".to_string(),
-                published_at: None,
-                days_since_publish: None,
-                status: Status::Error(e.to_string()),
-                registry: Registry::Docker,
-            },
-        },
-        Ok(resp) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(format!("Registry returned {}", resp.status())),
-            registry: Registry::Docker,
-        },
-        Err(e) => DepResult {
-            name: name.to_string(),
-            version_spec: version.to_string(),
-            latest_version: "unknown".to_string(),
-            published_at: None,
-            days_since_publish: None,
-            status: Status::Error(e.to_string()),
-            registry: Registry::Docker,
-        },
+            Ok(resp) if resp.status().as_u16() == 429 && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Ok(resp) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(format!("Registry returned {}", resp.status())),
+                    registry: Registry::Docker,
+                };
+            }
+            Err(e) if e.is_timeout() && retries < opts.max_retries => {
+                retries += 1;
+                let delay = 2u64.pow(retries);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(e) => {
+                return DepResult {
+                    name: name.to_string(),
+                    version_spec: version.to_string(),
+                    latest_version: "unknown".to_string(),
+                    published_at: None,
+                    days_since_publish: None,
+                    status: Status::Error(e.to_string()),
+                    registry: Registry::Docker,
+                };
+            }
+        }
     }
 }
 
@@ -1957,7 +1955,10 @@ fn parse_python_dep(s: &str) -> (String, String) {
     // Find the first version operator
     for (i, c) in s.char_indices() {
         if matches!(c, '>' | '<' | '=' | '~' | '!' | ';') {
-            let name = s[..i].trim().to_string();
+            let mut name = s[..i].trim().to_string();
+            if let Some(bracket) = name.find('[') {
+                name.truncate(bracket);
+            }
             let version = s[i..].trim().to_string();
             // For compound specs like ">=1.0,<2.0", take the first constraint
             let version = version
@@ -1970,7 +1971,11 @@ fn parse_python_dep(s: &str) -> (String, String) {
         }
     }
     // No version specified
-    (s.to_string(), "*".to_string())
+    let mut name = s.to_string();
+    if let Some(bracket) = name.find('[') {
+        name.truncate(bracket);
+    }
+    (name, "*".to_string())
 }
 
 /// Extract version string from a pyproject.toml value (handles both string and table forms).
@@ -2411,7 +2416,7 @@ pub async fn check_ruby_gemfile(
         if line.is_empty() || line.starts_with('#') || line.starts_with("source") {
             continue;
         }
-        if (line.starts_with("gem ") || line.starts_with("  gem ")) && !line.contains("group :") {
+        if line.trim_start().starts_with("gem ") && !line.trim_start().starts_with("group :") {
             if let Some(gem_match) = parse_ruby_gem_line(line) {
                 let parts: Vec<&str> = gem_match.splitn(2, ',').collect();
                 let name = parts[0]
@@ -2467,7 +2472,9 @@ pub async fn check_ruby_gemfile(
 }
 
 fn parse_ruby_gem_line(line: &str) -> Option<String> {
-    let trimmed = line.trim_start_matches("gem ").trim_start_matches("  gem ");
+    let trimmed = line.trim_start();
+    let trimmed = trimmed.strip_prefix("gem ")?;
+    let trimmed = trimmed.trim_start();
     let quote = trimmed.chars().next()?;
     if quote == '\'' || quote == '"' {
         let rest = &trimmed[1..];
@@ -2562,5 +2569,53 @@ mod tests {
             parse_ruby_gem_line("gem \"rspec\""),
             Some("rspec".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_ruby_gem_line_tab_indent() {
+        assert_eq!(parse_ruby_gem_line("\tgem 'pry'"), Some("pry".to_string()));
+    }
+
+    #[test]
+    fn test_parse_ruby_gem_line_four_space_indent() {
+        assert_eq!(
+            parse_ruby_gem_line("    gem 'devise'"),
+            Some("devise".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_python_dep_extras() {
+        let (name, ver) = parse_python_dep("requests[security]>=2.28.0");
+        assert_eq!(name, "requests");
+        assert_eq!(ver, ">=2.28.0");
+    }
+
+    #[test]
+    fn test_parse_python_dep_extras_no_version() {
+        let (name, ver) = parse_python_dep("requests[security]");
+        assert_eq!(name, "requests");
+        assert_eq!(ver, "*");
+    }
+
+    #[test]
+    fn test_parse_python_dep_extras_complex() {
+        let (name, ver) = parse_python_dep("django[argon2]==4.2.0");
+        assert_eq!(name, "django");
+        assert_eq!(ver, "==4.2.0");
+    }
+
+    #[test]
+    fn test_classify_custom_fresh_only() {
+        let opts = CheckOptions {
+            threshold_fresh: 30,
+            threshold_aging: 60,
+            threshold_stale: 90,
+            ..CheckOptions::default()
+        };
+        assert_eq!(classify(0, &opts), Status::Fresh);
+        assert_eq!(classify(30, &opts), Status::Aging);
+        assert_eq!(classify(60, &opts), Status::Stale);
+        assert_eq!(classify(90, &opts), Status::Ancient);
     }
 }
